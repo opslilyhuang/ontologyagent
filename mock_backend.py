@@ -200,6 +200,53 @@ MOCK_QA: list[tuple[str, str, list]] = [
      [{"type": "vector", "content": "客户甲 | total_orders=2", "entity_type": "Customer"}]),
 ]
 
+# ─── 数据源字段（用于审核页 "添加属性"） ──────────────
+_MOCK_FIELDS: list[dict] = []
+_seen_fields: set[str] = set()
+for _c in MOCK_CLASSES:
+    for _p in _c["properties"]:
+        _src = _p.get("source", "")
+        if "→" in _src:
+            _tbl, _fld = [s.strip() for s in _src.split("→")]
+            if _fld not in _seen_fields:
+                _seen_fields.add(_fld)
+                _MOCK_FIELDS.append({"name": _fld, "table": _tbl, "source": _src, "sample_values": []})
+# 额外字段（模拟未被自动选中的字段，供用户手动添加）
+_MOCK_FIELDS.extend([
+    {"name": "phone",      "table": "employees.xlsx", "source": "employees.xlsx → phone",      "sample_values": ["138-0000-0001", "139-0000-0002"]},
+    {"name": "address",    "table": "employees.xlsx", "source": "employees.xlsx → address",    "sample_values": ["北京市海淀区", "上海市浦东新区"]},
+    {"name": "created_at", "table": "employees.xlsx", "source": "employees.xlsx → created_at", "sample_values": ["2023-01-15", "2023-03-20"]},
+    {"name": "tax_id",     "table": "employees.xlsx", "source": "employees.xlsx → tax_id",     "sample_values": ["91350000MA5W3Y6K0Y", "91440300MA5N6JK7B8"]},
+])
+
+# ─── 属性标签映射（模拟大模型翻译） ────────────────────
+_FIELD_LABEL_MAP: dict[str, tuple[str, str]] = {
+    "employee_id":     ("员工编号",   "唯一标识每位员工的系统编号"),
+    "name":            ("姓名",       "人员的全名信息"),
+    "email":           ("工作邮箱",   "员工的企业邮箱地址，用于通知和身份认证"),
+    "salary":          ("月薪",      "员工当前的月薪金额（元）"),
+    "hire_date":       ("入职日期",   "员工正式入公司的日期"),
+    "status":          ("状态",      "当前状态枚举值"),
+    "department_id":   ("部门编号",   "所属部门的唯一编号，外键关联 Department"),
+    "manager_id":      ("直属上级",   "直接汇报上级的员工编号，自引用外键"),
+    "department_name": ("部门名称",   "部门的正式名称"),
+    "budget":          ("年度预算",   "部门当前年度预算金额（元）"),
+    "location":        ("办公地点",   "部门主要办公所在城市"),
+    "order_id":        ("订单编号",   "唯一标识每条订单的编号"),
+    "customer_name":   ("客户名称",   "关联客户实体的名称，外键"),
+    "product":         ("产品名称",   "本订单包含的产品名称"),
+    "amount":          ("订单金额",   "订单总金额（元）"),
+    "order_date":      ("创建日期",   "订单创建（下单）的日期"),
+    "notes":           ("备注",      "附加备注信息，可选填写"),
+    "customer_id":     ("客户编号",   "唯一标识客户的编号"),
+    "total_orders":    ("订单总数",   "该客户名下的历史订单总数"),
+    "phone":           ("手机号码",   "员工的个人手机号码"),
+    "address":         ("住宅地址",   "员工的住宅地址信息"),
+    "created_at":      ("创建时间",   "记录在系统中的创建时间戳"),
+    "tax_id":          ("税务编号",   "企业或个人的税务识别编号"),
+}
+
+
 def _mock_answer(question: str) -> dict[str, Any]:
     q = question.lower()
     for keyword, answer, sources in MOCK_QA:
@@ -285,6 +332,11 @@ async def ds_get(source_id: str):
 @app.post("/api/v1/data-sources/{source_id}/test-connection")
 async def ds_test(source_id: str):
     return {"ok": True, "error": None}
+
+@app.get("/api/v1/data-sources/{source_id}/fields")
+async def ds_fields(source_id: str):
+    """返回数据源可用字段列表（审核页用于添加属性）。"""
+    return {"fields": _MOCK_FIELDS}
 
 
 # ── 触发分析 + 模拟进度 ───────────────────────────
@@ -524,6 +576,18 @@ async def ont_chat(ontology_id: str, payload: _ChatReq):
 class _ReanalyzeReq(BaseModel):
     description: str
     class_name: Optional[str] = None
+
+class _GenerateLabelReq(BaseModel):
+    name: str
+    data_source_id: Optional[str] = None
+
+@app.post("/api/v1/ontologies/{ontology_id}/generate-label")
+async def ont_generate_label(ontology_id: str, payload: _GenerateLabelReq):
+    """模拟大模型：根据英文字段名生成中文名称和描述。"""
+    await asyncio.sleep(0.6)
+    label, desc = _FIELD_LABEL_MAP.get(payload.name, (payload.name, f"字段 {payload.name} 的数据信息"))
+    return {"label": label, "description": desc}
+
 
 @app.post("/api/v1/ontologies/{ontology_id}/reanalyze")
 async def ont_reanalyze(ontology_id: str, payload: _ReanalyzeReq):

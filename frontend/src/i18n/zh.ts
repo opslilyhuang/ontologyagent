@@ -101,6 +101,40 @@ const zh: Record<string, string> = {
   'review.reanalyze.cls.hint': '描述你对此类的要求',
   'review.reanalyze.cls.placeholder': '例如: 需要包含经纬度、城市名和区域编码…',
   'review.reanalyze.cls.confirm': '确认',
+  'review.ontology.source':    '来源:',
+  'review.classes.count':      '类',
+  'review.relations.count':    '关系',
+
+  // ── 审核页 — 属性表头 ──
+  'review.prop.engname':       '英文名称',
+  'review.prop.label':         '中文名称',
+  'review.prop.type':          '类型',
+  'review.prop.source':        '数据源字段',
+  'review.prop.pk':            '主键',
+  'review.prop.generating':    '生成中…',
+
+  // ── 审核页 — 添加属性 ──
+  'review.addProp.btn':        '+ 添加属性',
+  'review.addProp.select':     '选择字段',
+  'review.addProp.empty':      '无可添加字段',
+  'review.addProp.add':        '添加',
+  'review.addProp.cancel':     '取消',
+
+  // ── 审核页 — 关系表 ──
+  'review.rel.title':          '本体关系',
+  'review.rel.source':         '源本体',
+  'review.rel.target':         '目标本体',
+  'review.rel.name':           '关系名',
+  'review.rel.srcField':       '源字段',
+  'review.rel.tgtField':       '目标字段',
+  'review.rel.type':           '关系类型',
+  'review.rel.confidence':     '置信度',
+  'review.rel.empty':          '无关系定义',
+  'review.card.n1':            '多对一',
+  'review.card.1n':            '一对多',
+  'review.card.11':            '一对一',
+  'review.card.nm':            '多对多',
+
   'review.relations':          '关系',
   'review.classes.hint':       '类与属性（可勾选/编辑类型）',
   'review.save':               '确认入本体管理',
@@ -152,6 +186,11 @@ const zh: Record<string, string> = {
   'ontologyDetail.graph.edges':'{{n}} 边',
   'ontologyDetail.rels.empty': '无关系定义',
   'ontologyDetail.apis.empty': '发布后会自动生成 API 端点',
+  'ontologyDetail.tab.objects': '对象',
+  'ontologyDetail.objects.all':   '全部实体类',
+  'ontologyDetail.objects.loading':'加载中…',
+  'ontologyDetail.objects.empty': '无实体数据',
+  'ontologyDetail.objects.count': '共 {{n}} 条',
   'ontologyDetail.loading':    '加载中…',
   'ontologyDetail.err.publish':'发布失败: ',
 

@@ -120,6 +120,14 @@ export interface BatchInfo {
   created_at: string
 }
 
+// ── 数据源字段 ────────────────────
+export interface SourceField {
+  name: string
+  table: string
+  source: string
+  sample_values?: unknown[]
+}
+
 // ── Q&A 会话 ─────────────────────
 export interface QASession {
   id: string

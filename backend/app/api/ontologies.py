@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
-from ..models.schemas import OntologyResponse, OntologyUpdate, ChatRequest, ChatResponse, ReanalyzeRequest, OntologyPackageRequest
+from ..models.schemas import OntologyResponse, OntologyUpdate, ChatRequest, ChatResponse, ReanalyzeRequest, OntologyPackageRequest, GenerateLabelRequest
 from ..services.ontology_service import (
     get_ontology, list_ontologies, update_ontology, publish_ontology, get_generated_apis,
 )
@@ -162,6 +162,27 @@ async def reanalyze(ontology_id: str, payload: ReanalyzeRequest, db: AsyncSessio
             raise HTTPException(status_code=500, detail=f"重新分析失败: {e}")
 
     return _ont_to_response(ont)
+
+# ── 生成中文名称和描述 ─────────────────────
+@router.post("/{ontology_id}/generate-label")
+async def generate_label(ontology_id: str, payload: GenerateLabelRequest):
+    """根据英文属性名称，调用大模型生成中文名称和描述。"""
+    from ..core.llm import llm_chat_json
+
+    prompt = (
+        f"根据英文字段名称，生成合适的中文名称和描述。\n"
+        f"英文名称: {payload.name}\n\n"
+        f"要求:\n"
+        f"- 中文名称: 简短，2-4个字，准确反映字段含义\n"
+        f"- 描述: 简要说明该字段的业务含义，不超过30字\n\n"
+        f'只返回JSON: {{"label": "中文名称", "description": "描述"}}'
+    )
+    try:
+        result = await llm_chat_json(prompt)
+        return {"label": result.get("label", payload.name), "description": result.get("description", "")}
+    except Exception:
+        return {"label": payload.name, "description": ""}
+
 
 # ── 智能问答 ───────────────────────────────
 @router.post("/{ontology_id}/chat", response_model=ChatResponse)

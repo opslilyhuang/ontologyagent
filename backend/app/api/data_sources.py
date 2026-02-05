@@ -126,6 +126,26 @@ async def test_connection(source_id: str, db: AsyncSession = Depends(get_db)):
     return await test_data_source_connection(db, source_id)
 
 
+# ── 获取数据源字段列表 ─────────────────────
+@router.get("/{source_id}/fields")
+async def get_fields(source_id: str, db: AsyncSession = Depends(get_db)):
+    """获取数据源可用字段列表（审核页用于添加属性）。"""
+    ds = await get_data_source(db, source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    fields: list[dict] = []
+    schema = ds.schema_info or {}
+    for table_name, table_info in (schema.get("tables") or {}).items():
+        for col in (table_info.get("columns") or []):
+            fields.append({
+                "name":          col.get("name", ""),
+                "table":         table_name,
+                "source":        f"{table_name} → {col.get('name', '')}",
+                "sample_values": col.get("samples", []),
+            })
+    return {"fields": fields}
+
+
 # ── 触发分析（异步编排） ──────────────────
 @router.post("/{source_id}/analyze", response_model=TaskResponse)
 async def analyze_source(source_id: str, db: AsyncSession = Depends(get_db)):

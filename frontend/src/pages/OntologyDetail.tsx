@@ -6,27 +6,62 @@ import type { Ontology, GraphNode, GraphEdge } from '@/types'
 import { GraphEditor } from '@/components/OntologyEditor/GraphEditor'
 import { useT } from '@/i18n'
 
-type DetailTab = 'graph' | 'classes' | 'relations' | 'apis'
+type DetailTab = 'graph' | 'classes' | 'relations' | 'objects' | 'apis'
+
+const TAB_ORDER: DetailTab[] = ['graph', 'classes', 'relations', 'objects', 'apis']
 
 const TAB_KEYS: Record<DetailTab, string> = {
-  graph: 'ontologyDetail.tab.graph', classes: 'ontologyDetail.tab.classes', relations: 'ontologyDetail.tab.rels', apis: 'ontologyDetail.tab.apis',
+  graph:     'ontologyDetail.tab.graph',
+  classes:   'ontologyDetail.tab.classes',
+  relations: 'ontologyDetail.tab.rels',
+  objects:   'ontologyDetail.tab.objects',
+  apis:      'ontologyDetail.tab.apis',
+}
+
+// ── cardinality badge helpers ──
+const CARD_KEY: Record<string, string> = {
+  'n:1':  'review.card.n1',
+  '1:n':  'review.card.1n',
+  '1:1':  'review.card.11',
+  'n:m':  'review.card.nm',
+}
+const CARD_COLOR: Record<string, string> = {
+  'n:1':  'bg-amber-50 text-amber-700',
+  '1:n':  'bg-sky-50 text-sky-700',
+  '1:1':  'bg-emerald-50 text-emerald-700',
+  'n:m':  'bg-rose-50 text-rose-700',
 }
 
 export function OntologyDetailPage() {
   const { t } = useT()
-  const { id }     = useParams<{ id: string }>()!
-  const navigate   = useNavigate()
-  const [ontology, setOntology]       = useState<Ontology | null>(null)
-  const [graph, setGraph]             = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({ nodes: [], edges: [] })
-  const [tab, setTab]                 = useState<DetailTab>('graph')
-  const [publishing, setPublishing]   = useState(false)
-  const [apis, setApis]               = useState<{ path: string; method: string; description: string }[]>([])
+  const { id }   = useParams<{ id: string }>()!
+  const navigate = useNavigate()
+
+  const [ontology, setOntology]     = useState<Ontology | null>(null)
+  const [graph, setGraph]           = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({ nodes: [], edges: [] })
+  const [tab, setTab]               = useState<DetailTab>('graph')
+  const [publishing, setPublishing] = useState(false)
+  const [apis, setApis]             = useState<{ path: string; method: string; description: string }[]>([])
+
+  // ── objects tab state ──
+  const [entities, setEntities]         = useState<Record<string, unknown>[]>([])
+  const [objectsLoading, setObjectsLoading] = useState(false)
+  const [classFilter, setClassFilter]   = useState<string>('')   // '' = all
 
   useEffect(() => {
     if (!id) return
     ontologyApi.get(id).then(setOntology).catch(() => {})
     ontologyApi.getGraph(id).then(setGraph).catch(() => {})
   }, [id])
+
+  // fetch entities when objects tab is active or filter changes
+  useEffect(() => {
+    if (tab !== 'objects' || !id) return
+    setObjectsLoading(true)
+    ontologyApi.entities(id, classFilter || undefined)
+      .then(res => { setEntities(res.entities as Record<string, unknown>[]); setObjectsLoading(false) })
+      .catch(() => { setEntities([]); setObjectsLoading(false) })
+  }, [tab, id, classFilter])
 
   const handlePublish = async () => {
     if (!id) return
@@ -44,6 +79,12 @@ export function OntologyDetailPage() {
     }
   }
 
+  const handleTabSwitch = (next: DetailTab) => {
+    setTab(next)
+    if (next === 'apis') ontologyApi.getApis(id!).then(setApis).catch(() => {})
+    if (next === 'objects') setClassFilter('')  // reset filter on entry
+  }
+
   if (!ontology) {
     return (
       <div className="p-8 fade-in">
@@ -55,6 +96,11 @@ export function OntologyDetailPage() {
       </div>
     )
   }
+
+  // ── derive entity table columns (exclude _id) ──
+  const entityCols: string[] = entities.length
+    ? Object.keys(entities[0]).filter(k => k !== '_id')
+    : []
 
   return (
     <div className="p-8 fade-in">
@@ -100,9 +146,9 @@ export function OntologyDetailPage() {
 
         {/* Pill Tabs */}
         <div className="bg-slate-100 rounded-xl p-1 flex gap-0.5 w-fit mb-5">
-          {(['graph', 'classes', 'relations', 'apis'] as DetailTab[]).map(tabKey => (
+          {TAB_ORDER.map(tabKey => (
             <button key={tabKey}
-              onClick={() => { setTab(tabKey); if (tabKey === 'apis') ontologyApi.getApis(id!).then(setApis).catch(() => {}) }}
+              onClick={() => handleTabSwitch(tabKey)}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
                 tab === tabKey ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'
               }`}>
@@ -114,7 +160,7 @@ export function OntologyDetailPage() {
         {/* ── Content ── */}
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
 
-          {/* Graph */}
+          {/* ── Graph ── */}
           {tab === 'graph' && (
             <div>
               <div className="flex items-center justify-between mb-3">
@@ -128,12 +174,13 @@ export function OntologyDetailPage() {
             </div>
           )}
 
-          {/* Classes */}
+          {/* ── Classes (enhanced table) ── */}
           {tab === 'classes' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {ontology.classes.map((cls, i) => (
-                <div key={i} className="border border-slate-100 rounded-xl p-4">
-                  <div className="flex items-center gap-2 flex-wrap">
+                <div key={i} className="border border-slate-100 rounded-xl overflow-hidden">
+                  {/* class header */}
+                  <div className="flex items-center gap-2 px-4 py-2.5 bg-slate-50 flex-wrap">
                     <span className="text-sm font-semibold text-slate-800">{cls.name}</span>
                     {cls.label && cls.label !== cls.name && (
                       <span className="text-xs text-slate-400">({cls.label})</span>
@@ -141,44 +188,161 @@ export function OntologyDetailPage() {
                     {cls.parent && (
                       <span className="text-xs bg-violet-50 text-violet-600 px-2 py-0.5 rounded-full">extends {cls.parent}</span>
                     )}
+                    <span className="text-xs text-slate-400 ml-auto">{cls.properties.length} {t('review.classes.count')}</span>
                   </div>
-                  {cls.description && <p className="text-xs text-slate-400 mt-1">{cls.description}</p>}
-                  <div className="flex flex-wrap gap-1.5 mt-2.5">
-                    {cls.properties.map((p, j) => (
-                      <span key={j} className="text-xs bg-slate-50 border border-slate-100 px-2.5 py-1 rounded-lg">
-                        <span className="text-slate-600">{p.name}</span>
-                        <span className="text-slate-300 mx-1">:</span>
-                        <span className="text-indigo-500 font-medium">{p.type}</span>
-                        {p.confidence && (
-                          <span className="text-slate-400 ml-1.5">({(p.confidence * 100).toFixed(0)}%)</span>
-                        )}
-                      </span>
-                    ))}
+                  {cls.description && (
+                    <p className="text-xs text-slate-400 px-4 pt-2">{cls.description}</p>
+                  )}
+
+                  {/* properties table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
+                      <thead>
+                        <tr className="bg-slate-50 border-t border-slate-100">
+                          <th className="text-xs font-semibold text-slate-400 px-4 py-2">{t('review.prop.engname')}</th>
+                          <th className="text-xs font-semibold text-slate-400 px-3 py-2">{t('review.prop.label')}</th>
+                          <th className="text-xs font-semibold text-slate-400 px-3 py-2">{t('review.prop.type')}</th>
+                          <th className="text-xs font-semibold text-slate-400 px-3 py-2">{t('review.prop.source')}</th>
+                          <th className="text-xs font-semibold text-slate-400 px-3 py-2 text-center w-12">{t('review.prop.pk')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cls.properties.map((p, j) => (
+                          <tr key={j} className="border-t border-slate-50 hover:bg-slate-50/40 transition">
+                            <td className="px-4 py-2">
+                              <span className="text-xs font-medium text-slate-700">{p.name}</span>
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="text-xs text-slate-500">{p.label || '—'}</span>
+                              {p.description && (
+                                <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">{p.description}</p>
+                              )}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-lg font-medium">{p.type}</span>
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="text-xs font-mono text-slate-400">{p.source || '—'}</span>
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              {p.is_primary_key && (
+                                <span className="text-[10px] font-bold bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded">PK</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Relations */}
+          {/* ── Relations (enhanced table) ── */}
           {tab === 'relations' && (
-            <div className="space-y-2">
-              {ontology.relations.length === 0 && <p className="text-sm text-slate-400">{t('ontologyDetail.rels.empty')}</p>}
-              {ontology.relations.map((r, i) => (
-                <div key={i} className="border border-slate-100 rounded-xl p-3.5 flex items-center gap-3">
-                  <span className="text-xs font-semibold bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-lg">{r.source_class}</span>
-                  <div className="flex-1 text-center">
-                    <p className="text-xs text-slate-600 font-medium">{r.relation_name}</p>
-                    <p className="text-xs text-slate-300">{r.cardinality}</p>
-                  </div>
-                  <span className="text-xs font-semibold bg-violet-50 text-violet-700 px-2.5 py-1 rounded-lg">{r.target_class}</span>
-                  <span className="text-xs text-slate-400 ml-auto">{(r.confidence * 100).toFixed(0)}%</span>
+            <div>
+              {ontology.relations.length === 0 ? (
+                <p className="text-sm text-slate-400">{t('ontologyDetail.rels.empty')}</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-100">
+                        <th className="text-xs font-semibold text-slate-400 px-4 py-2.5">{t('review.rel.source')}</th>
+                        <th className="text-xs font-semibold text-slate-400 px-3 py-2.5">{t('review.rel.target')}</th>
+                        <th className="text-xs font-semibold text-slate-400 px-3 py-2.5">{t('review.rel.name')}</th>
+                        <th className="text-xs font-semibold text-slate-400 px-3 py-2.5">{t('review.rel.srcField')}</th>
+                        <th className="text-xs font-semibold text-slate-400 px-3 py-2.5">{t('review.rel.tgtField')}</th>
+                        <th className="text-xs font-semibold text-slate-400 px-3 py-2.5">{t('review.rel.type')}</th>
+                        <th className="text-xs font-semibold text-slate-400 px-3 py-2.5 text-right">{t('review.rel.confidence')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ontology.relations.map((r, i) => (
+                        <tr key={i} className={`border-t border-slate-50 hover:bg-slate-50/40 transition ${i % 2 === 1 ? 'bg-slate-50/20' : ''}`}>
+                          <td className="px-4 py-2.5">
+                            <span className="text-xs font-semibold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-lg">{r.source_class}</span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className="text-xs font-semibold bg-violet-50 text-violet-700 px-2 py-0.5 rounded-lg">{r.target_class}</span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className="text-xs font-medium text-slate-700">{r.relation_name}</span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className="text-xs font-mono text-slate-500">{r.source_field || '—'}</span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className="text-xs font-mono text-slate-500">{r.target_field || '—'}</span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-lg ${CARD_COLOR[r.cardinality] || 'bg-slate-50 text-slate-600'}`}>
+                              {t(CARD_KEY[r.cardinality] || r.cardinality)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <span className="text-xs text-slate-500">{(r.confidence * 100).toFixed(0)}%</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
+              )}
             </div>
           )}
 
-          {/* APIs */}
+          {/* ── Objects (entity instances) ── */}
+          {tab === 'objects' && (
+            <div>
+              {/* class filter dropdown */}
+              <div className="flex items-center gap-3 mb-4">
+                <select value={classFilter} onChange={e => setClassFilter(e.target.value)}
+                  className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 text-slate-600 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300">
+                  <option value="">{t('ontologyDetail.objects.all')}</option>
+                  {ontology.classes.map((cls, i) => (
+                    <option key={i} value={cls.name}>{cls.name}{cls.label && cls.label !== cls.name ? ` (${cls.label})` : ''}</option>
+                  ))}
+                </select>
+                {entities.length > 0 && (
+                  <span className="text-xs text-slate-400">{t('ontologyDetail.objects.count', { n: entities.length })}</span>
+                )}
+              </div>
+
+              {/* loading / empty / table */}
+              {objectsLoading ? (
+                <p className="text-sm text-slate-400 py-6 text-center">{t('ontologyDetail.objects.loading')}</p>
+              ) : entities.length === 0 ? (
+                <p className="text-sm text-slate-400 py-6 text-center">{t('ontologyDetail.objects.empty')}</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-100">
+                  <table className="w-full text-left" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
+                    <thead>
+                      <tr className="bg-slate-50">
+                        {entityCols.map(col => (
+                          <th key={col} className="text-xs font-semibold text-slate-500 px-4 py-2.5 border-b border-slate-100 whitespace-nowrap">{col}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {entities.map((row, i) => (
+                        <tr key={i} className={`border-t border-slate-50 hover:bg-indigo-50/30 transition ${i % 2 === 1 ? 'bg-slate-50/30' : ''}`}>
+                          {entityCols.map(col => (
+                            <td key={col} className="px-4 py-2 text-xs text-slate-600 whitespace-nowrap">
+                              {row[col] != null ? String(row[col]) : '—'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── APIs ── */}
           {tab === 'apis' && (
             <div>
               {apis.length === 0 ? (

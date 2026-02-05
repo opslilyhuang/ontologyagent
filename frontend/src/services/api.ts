@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { DataSource, CreateDataSourcePayload, OrchestrationTask, Ontology, ChatMessage, GraphNode, GraphEdge, GeneratedAPI, AnalysisBatch, BatchInfo, QASession } from '@/types'
+import type { DataSource, CreateDataSourcePayload, OrchestrationTask, Ontology, ChatMessage, GraphNode, GraphEdge, GeneratedAPI, AnalysisBatch, BatchInfo, QASession, SourceField } from '@/types'
 
 const BASE = '/api/v1'
 
@@ -29,6 +29,8 @@ export const dataSources = {
   analyze:        (id: string) => client.post<OrchestrationTask>(`/data-sources/${id}/analyze`).then(r => r.data),
   getTask:        (sourceId: string, taskId: string) => client.get<OrchestrationTask>(`/data-sources/${sourceId}/task/${taskId}`).then(r => r.data),
 
+  getFields: (sourceId: string) => client.get<{ fields: SourceField[] }>(`/data-sources/${sourceId}/fields`).then(r => r.data),
+
   // ── 批量分析 ──
   batchAnalyze: (sourceIds: string[]) =>
     client.post<{ batch_id: string; status: string; source_count: number }>('/data-sources/batch-analyze', { source_ids: sourceIds }).then(r => r.data),
@@ -53,6 +55,10 @@ export const ontologyApi = {
     client.post<{ results: unknown[] }>(`/ontologies/${id}/search`, { query, top_k: topK }).then(r => r.data),
   entities: (id: string, className?: string) =>
     client.get<{ entities: Record<string, unknown>[]; count: number }>(`/ontologies/${id}/entities`, { params: className ? { class_name: className } : {} }).then(r => r.data),
+
+  // ── 生成中文名称和描述 ──
+  generateLabel: (ontologyId: string, name: string, dataSourceId?: string) =>
+    client.post<{ label: string; description: string }>(`/ontologies/${ontologyId}/generate-label`, { name, data_source_id: dataSourceId || null }).then(r => r.data),
 
   // ── 重新分析 ──
   reanalyze: (id: string, description: string, className?: string) =>

@@ -109,6 +109,11 @@ class OntologyPackageRequest(BaseModel):
 
 
 # ─── Q&A 会话 ──────────────────────────
+class GenerateLabelRequest(BaseModel):
+    name: str
+    data_source_id: Optional[str] = None
+
+
 class QASessionCreate(BaseModel):
     name: str
     ontology_ids: list[str]

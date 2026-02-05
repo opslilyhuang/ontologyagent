@@ -101,6 +101,40 @@ const en: Record<string, string> = {
   'review.reanalyze.cls.hint': 'Describe your requirements for this class',
   'review.reanalyze.cls.placeholder': 'e.g. Include latitude/longitude, city name, and region code…',
   'review.reanalyze.cls.confirm': 'Confirm',
+  'review.ontology.source':    'Source:',
+  'review.classes.count':      'classes',
+  'review.relations.count':    'relations',
+
+  // ── review — property headers ──
+  'review.prop.engname':       'English Name',
+  'review.prop.label':         'Chinese Name',
+  'review.prop.type':          'Type',
+  'review.prop.source':        'Source Field',
+  'review.prop.pk':            'PK',
+  'review.prop.generating':    'Generating…',
+
+  // ── review — add property ──
+  'review.addProp.btn':        '+ Add Property',
+  'review.addProp.select':     'Select field',
+  'review.addProp.empty':      'No fields available to add',
+  'review.addProp.add':        'Add',
+  'review.addProp.cancel':     'Cancel',
+
+  // ── review — relation table ──
+  'review.rel.title':          'Ontology Relations',
+  'review.rel.source':         'Source Entity',
+  'review.rel.target':         'Target Entity',
+  'review.rel.name':           'Relation',
+  'review.rel.srcField':       'Source Field',
+  'review.rel.tgtField':       'Target Field',
+  'review.rel.type':           'Relation Type',
+  'review.rel.confidence':     'Confidence',
+  'review.rel.empty':          'No relations defined',
+  'review.card.n1':            'Many-to-One',
+  'review.card.1n':            'One-to-Many',
+  'review.card.11':            'One-to-One',
+  'review.card.nm':            'Many-to-Many',
+
   'review.relations':          'Relations',
   'review.classes.hint':       'Classes & Properties (checkable / type-editable)',
   'review.save':               'Confirm & Save',
@@ -152,6 +186,11 @@ const en: Record<string, string> = {
   'ontologyDetail.graph.edges':'{{n}} edges',
   'ontologyDetail.rels.empty': 'No relations defined',
   'ontologyDetail.apis.empty': 'API endpoints will be auto-generated after publishing',
+  'ontologyDetail.tab.objects': 'Objects',
+  'ontologyDetail.objects.all':   'All entity classes',
+  'ontologyDetail.objects.loading':'Loading…',
+  'ontologyDetail.objects.empty': 'No entity data',
+  'ontologyDetail.objects.count': '{{n}} records',
   'ontologyDetail.loading':    'Loading…',
   'ontologyDetail.err.publish':'Publish failed: ',
 
