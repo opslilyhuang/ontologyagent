@@ -1,0 +1,7 @@
+[
+  {"order_id": "ORD-001", "customer_name": "客户甲", "employee_id": "1", "product": "SaaS套餐A", "amount": 12000, "order_date": "2024-01-15", "status": "completed", "notes": "大客户优惠，预计续约概率高"},
+  {"order_id": "ORD-002", "customer_name": "客户乙", "employee_id": "4", "product": "SaaS套餐B", "amount": 8500, "order_date": "2024-01-22", "status": "pending", "notes": "需要下周跟进客户需求确认"},
+  {"order_id": "ORD-003", "customer_name": "客户丙", "employee_id": "7", "product": "咨询服务", "amount": 5000, "order_date": "2024-02-03", "status": "completed", "notes": "一次性咨询项目已交付报告"},
+  {"order_id": "ORD-004", "customer_name": "客户甲", "employee_id": "1", "product": "SaaS套餐A", "amount": 12000, "order_date": "2024-02-15", "status": "completed", "notes": "续约成功，客户满意度高"},
+  {"order_id": "ORD-005", "customer_name": "客户丁", "employee_id": "5", "product": "SaaS套餐C", "amount": 25000, "order_date": "2024-02-28", "status": "negotiating", "notes": "企业级客户，正在协商定价和SLA条款"}
+]

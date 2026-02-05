@@ -1,0 +1,9 @@
+employee_id,name,email,department_id,manager_id,salary,hire_date,status
+1,张三,zhang3@company.com,10,NULL,85000,2022-03-15,active
+2,李四,li4@company.com,10,1,72000,2022-06-01,active
+3,王五,wang5@company.com,20,NULL,92000,2021-01-10,active
+4,赵六,zhao6@company.com,20,3,68000,2023-02-20,active
+5,陈七,chen7@company.com,10,1,78000,2022-09-05,active
+6,刘八,liu8@company.com,30,NULL,95000,2020-11-22,active
+7,黄九,huang9@company.com,30,6,71000,2023-04-18,inactive
+8,周十,zhou10@company.com,20,3,82000,2021-07-30,active
