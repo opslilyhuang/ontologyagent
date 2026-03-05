@@ -1,16 +1,17 @@
 import { ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Upload, Layers, MessageCircle } from 'lucide-react'
+import { LayoutDashboard, Upload, Layers, MessageCircle, FileCheck } from 'lucide-react'
 import { useT } from '@/i18n'
 
 export function Layout({ children }: { children: ReactNode }) {
   const { lang, setLang, t } = useT()
 
   const NAV = [
-    { to: '/',           key: 'layout.nav.dashboard',   Icon: LayoutDashboard },
-    { to: '/ingest',     key: 'layout.nav.ingest',      Icon: Upload },
-    { to: '/ontologies', key: 'layout.nav.ontologies',  Icon: Layers },
-    { to: '/qa',         key: 'layout.nav.qa',          Icon: MessageCircle },
+    { to: '/',            key: 'layout.nav.dashboard',   Icon: LayoutDashboard },
+    { to: '/ingest',      key: 'layout.nav.ingest',      Icon: Upload },
+    { to: '/ontologies',  key: 'layout.nav.ontologies',  Icon: Layers },
+    { to: '/import-logs', key: 'layout.nav.importlogs',  Icon: FileCheck },
+    { to: '/qa',          key: 'layout.nav.qa',          Icon: MessageCircle },
   ]
 
   return (

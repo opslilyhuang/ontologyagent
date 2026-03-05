@@ -9,10 +9,10 @@ export default defineConfig({
     alias: { '@': path.resolve(__dirname, './src') },
   },
   server: {
-    port: 3001,
+    port: 5173,
     proxy: {
-      '/api':    { target: 'http://localhost:8001', changeOrigin: true },
-      '/health': { target: 'http://localhost:8001', changeOrigin: true },
+      '/api':    { target: 'http://localhost:3001', changeOrigin: true },
+      '/health': { target: 'http://localhost:3001', changeOrigin: true },
     },
   },
 })

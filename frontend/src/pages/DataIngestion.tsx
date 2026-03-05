@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
-import { Upload, Database, Globe, Loader2, FileText } from 'lucide-react'
+import { Upload, Database, Globe, Loader2, FileText, Trash2, CheckCircle2 } from 'lucide-react'
 import { dataSources } from '@/services/api'
-import type { DataSource } from '@/types'
+import type { DataSource, OntologySourceMapping } from '@/types'
 import { useNavigate } from 'react-router-dom'
 import { useT } from '@/i18n'
 
@@ -18,6 +18,88 @@ const TYPE_ICONS: Record<string, typeof Upload> = { file: FileText, database: Da
 const LABEL = 'block text-xs font-medium text-slate-500 mb-1'
 const INPUT = 'w-full border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-transparent transition'
 
+// ── ViewOntologyButton Component ──
+function ViewOntologyButton({ source }: { source: DataSource }) {
+  const [ontologies, setOntologies] = useState<OntologySourceMapping[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showDropdown, setShowDropdown] = useState(false)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (source.status === 'analyzed') {
+      loadOntologies()
+    }
+  }, [source.id, source.status])
+
+  const loadOntologies = async () => {
+    setLoading(true)
+    try {
+      const data = await dataSources.getOntologies(source.id)
+      setOntologies(data)
+    } catch (err) {
+      console.error('Failed to load ontologies:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (source.status !== 'analyzed' || loading) {
+    return null
+  }
+
+  if (ontologies.length === 0) {
+    return null
+  }
+
+  if (ontologies.length === 1) {
+    return (
+      <button
+        onClick={() => navigate(`/ontologies/${ontologies[0].ontology_id}`)}
+        className="text-xs font-medium text-violet-600 bg-violet-50 hover:bg-violet-100 px-2.5 py-1 rounded-lg transition"
+      >
+        查看本体
+      </button>
+    )
+  }
+
+  // Multiple ontologies - show dropdown
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setShowDropdown(!showDropdown)}
+        className="text-xs font-medium text-violet-600 bg-violet-50 hover:bg-violet-100 px-2.5 py-1 rounded-lg transition"
+      >
+        查看本体 ({ontologies.length})
+      </button>
+      {showDropdown && (
+        <>
+          <div
+            className="fixed inset-0 z-10"
+            onClick={() => setShowDropdown(false)}
+          />
+          <div className="absolute right-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-20 py-1">
+            {ontologies.map((ont) => (
+              <button
+                key={ont.id}
+                onClick={() => {
+                  navigate(`/ontologies/${ont.ontology_id}`)
+                  setShowDropdown(false)
+                }}
+                className="w-full text-left px-3 py-2 hover:bg-slate-50 transition"
+              >
+                <p className="text-sm font-medium text-slate-700">{ont.display_name}</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {new Date(ont.created_at).toLocaleString()}
+                </p>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function DataIngestionPage() {
   const { t } = useT()
   const [tab, setTab]             = useState<Tab>('file')
@@ -28,14 +110,22 @@ export function DataIngestionPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [dbConfig, setDbConfig]   = useState({ host: '', port: '5432', database: '', username: '', password: '', db_type: 'postgresql' })
   const [apiConfig, setApiConfig] = useState({ base_url: '', auth_token: '', endpoints: '[{"path":"/data","method":"GET","name":"data"}]' })
+  const [uploadSuccess, setUploadSuccess] = useState<number | null>(null)
+  const [newlyUploadedIds, setNewlyUploadedIds] = useState<Set<string>>(new Set())
   const fileRef  = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
-    dataSources.list().then(setSources).catch(() => {})
+    dataSources.list().then(data => {
+      // 倒序排列：最新的在前
+      setSources(data.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()))
+    }).catch(() => {})
   }, [])
 
-  const refresh = () => dataSources.list().then(setSources).catch(() => {})
+  const refresh = () => dataSources.list().then(data => {
+    // 倒序排列：最新的在前
+    setSources(data.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()))
+  }).catch(() => {})
 
   // ── 批量上传 ──
   const handleFiles = async (files: FileList | File[]) => {
@@ -43,8 +133,20 @@ export function DataIngestionPage() {
     if (arr.length === 0) return
     setUploading(true)
     try {
-      await dataSources.uploadBatch(arr)
+      const results = await dataSources.uploadBatch(arr)
+
+      // 记录新上传的ID
+      const newIds = new Set(results.map(r => r.id))
+      setNewlyUploadedIds(newIds)
+
       await refresh()
+
+      // 显示成功提示
+      setUploadSuccess(results.length)
+      setTimeout(() => setUploadSuccess(null), 3000)
+
+      // 5秒后清除"新上传"标记
+      setTimeout(() => setNewlyUploadedIds(new Set()), 5000)
     } catch (err) {
       alert(t('ingest.err.upload') + (err as Error).message)
     } finally {
@@ -69,8 +171,15 @@ export function DataIngestionPage() {
   const handleDBConnect = async () => {
     setUploading(true)
     try {
-      await dataSources.create({ name: `DB: ${dbConfig.database}`, type: 'database', config: dbConfig })
+      const result = await dataSources.create({ name: `DB: ${dbConfig.database}`, type: 'database', config: dbConfig })
+
+      // 记录新创建的ID
+      setNewlyUploadedIds(new Set([result.id]))
+
       await refresh()
+
+      // 5秒后清除"新上传"标记
+      setTimeout(() => setNewlyUploadedIds(new Set()), 5000)
     } catch (err) {
       alert(t('ingest.err.connect') + (err as Error).message)
     } finally {
@@ -84,8 +193,15 @@ export function DataIngestionPage() {
     try {
       let endpoints
       try { endpoints = JSON.parse(apiConfig.endpoints) } catch { endpoints = [] }
-      await dataSources.create({ name: `API: ${apiConfig.base_url}`, type: 'api', config: { ...apiConfig, endpoints } })
+      const result = await dataSources.create({ name: `API: ${apiConfig.base_url}`, type: 'api', config: { ...apiConfig, endpoints } })
+
+      // 记录新创建的ID
+      setNewlyUploadedIds(new Set([result.id]))
+
       await refresh()
+
+      // 5秒后清除"新上传"标记
+      setTimeout(() => setNewlyUploadedIds(new Set()), 5000)
     } catch (err) {
       alert(t('ingest.err.api') + (err as Error).message)
     } finally {
@@ -120,9 +236,48 @@ export function DataIngestionPage() {
     }
   }
 
+  // ── 删除单个数据源 ──
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`确定要删除数据源 "${name}" 吗？`)) return
+    try {
+      await dataSources.delete(id)
+      await refresh()
+      setSelectedIds(prev => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    } catch (err) {
+      alert('删除失败: ' + (err as Error).message)
+    }
+  }
+
+  // ── 批量删除数据源 ──
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return
+    if (!confirm(`确定要删除选中的 ${selectedIds.size} 个数据源吗？`)) return
+    try {
+      await dataSources.batchDelete(Array.from(selectedIds))
+      await refresh()
+      setSelectedIds(new Set())
+    } catch (err) {
+      alert('批量删除失败: ' + (err as Error).message)
+    }
+  }
+
   return (
     <div className="p-8 fade-in">
       <div className="max-w-4xl mx-auto">
+
+        {/* 上传成功提示 */}
+        {uploadSuccess !== null && (
+          <div className="fixed top-4 right-4 bg-green-50 border border-green-200 rounded-xl px-4 py-3 flex items-center gap-3 shadow-lg animate-in fade-in slide-in-from-top-2 z-50">
+            <CheckCircle2 size={20} className="text-green-600" />
+            <p className="text-sm font-medium text-green-800">
+              成功接入 {uploadSuccess} 个文件
+            </p>
+          </div>
+        )}
 
         {/* Header */}
         <div className="mb-6">
@@ -281,6 +436,7 @@ export function DataIngestionPage() {
                   const statusColor = s.status === 'analyzed' ? 'text-emerald-600' : s.status === 'error' ? 'text-red-500' : 'text-slate-500'
                   const canSelect   = s.status === 'created'
                   const isSelected  = selectedIds.has(s.id)
+                  const isNewlyUploaded = newlyUploadedIds.has(s.id)
 
                   return (
                     <div key={s.id} className={`flex items-center gap-3 p-3 rounded-xl border transition ${
@@ -298,14 +454,28 @@ export function DataIngestionPage() {
                         <Icon size={17} className="text-slate-500" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-700 truncate">{s.name}</p>
-                        <p className="text-xs text-slate-400 mt-0.5">{new Date(s.created_at).toLocaleDateString()}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-slate-700 truncate">{s.name}</p>
+                          {isNewlyUploaded && (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-300 animate-pulse">
+                              ✓ 新上传
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">{new Date(s.created_at).toLocaleString()}</p>
                       </div>
                       <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusBg} ${statusColor}`}>{s.status}</span>
-                      {s.status === 'analyzed' && (
-                        <button onClick={() => navigate('/ontologies')}
-                          className="text-xs font-medium text-violet-600 bg-violet-50 hover:bg-violet-100 px-2.5 py-1 rounded-lg transition">{t('ingest.sources.viewont')}</button>
-                      )}
+                      <ViewOntologyButton source={s} />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleDelete(s.id, s.name)
+                        }}
+                        className="flex-shrink-0 p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
+                        title="删除"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   )
                 })}
@@ -314,14 +484,18 @@ export function DataIngestionPage() {
           )}
         </div>
 
-        {/* ── 开始分析 ── */}
+        {/* ── 开始分析 / 批量删除 ── */}
         {selectedIds.size > 0 && (
-          <div className="mt-4">
+          <div className="mt-4 flex gap-3">
             <button onClick={handleAnalyze} disabled={analyzing}
-              className="w-full bg-indigo-600 text-white rounded-2xl px-4 py-3 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 transition flex items-center justify-center gap-2">
+              className="flex-1 bg-indigo-600 text-white rounded-2xl px-4 py-3 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 transition flex items-center justify-center gap-2">
               {analyzing
                 ? <><Loader2 size={16} className="animate-spin" /> {t('ingest.analyzing')}</>
                 : t('ingest.analyzeBtn', { n: selectedIds.size })}
+            </button>
+            <button onClick={handleBatchDelete}
+              className="flex-shrink-0 bg-red-50 text-red-600 hover:bg-red-100 rounded-2xl px-4 py-3 text-sm font-semibold transition flex items-center gap-2">
+              <Trash2 size={16} /> 删除 ({selectedIds.size})
             </button>
           </div>
         )}

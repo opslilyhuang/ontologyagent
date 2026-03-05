@@ -2,7 +2,7 @@
 Mock Backend — 内存存储，模拟完整编排流程
 运行: python3 mock_backend.py  →  http://localhost:8000
 """
-import uuid, time, asyncio, shutil
+import uuid, time, asyncio, shutil, json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, List, Dict
@@ -10,6 +10,7 @@ from typing import Any, Optional, List, Dict
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import pandas as pd
 
 # ─── 内存存储 ─────────────────────────────────────
 _data_sources: dict[str, dict] = {}
@@ -18,6 +19,7 @@ _tasks:        dict[str, dict] = {}
 _batches:      dict[str, dict] = {}
 _qa_sessions:  dict[str, dict] = {}
 _chat_history: dict[str, list] = {}   # ontology_id → [msg, ...]
+_import_logs:  dict[str, dict] = {}   # import_log_id → log_data
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -31,6 +33,227 @@ def _now() -> str:
 
 def _uid() -> str:
     return str(uuid.uuid4())
+
+# ─── 动态本体生成函数 ─────────────────────────────
+def _infer_type(series: pd.Series) -> str:
+    """推断pandas列的数据类型"""
+    series = series.dropna()
+    if len(series) == 0:
+        return "varchar"
+
+    # 检查数值类型
+    if pd.api.types.is_integer_dtype(series):
+        return "int32"
+    if pd.api.types.is_float_dtype(series):
+        return "float64"
+    if pd.api.types.is_bool_dtype(series):
+        return "boolean"
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "datetime"
+
+    # 字符串类型进一步检查
+    if pd.api.types.is_string_dtype(series) or pd.api.types.is_object_dtype(series):
+        # 检查是否是日期
+        try:
+            pd.to_datetime(series.head(10))
+            return "date"
+        except:
+            pass
+
+        # 检查是否是枚举（唯一值少于10个且少于总数的50%）
+        unique_count = series.nunique()
+        if unique_count < 10 and unique_count < len(series) * 0.5:
+            return "enum"
+
+        # 检查是否是email
+        if series.astype(str).str.contains('@', na=False).sum() > len(series) * 0.8:
+            return "email"
+
+        # 默认varchar
+        max_len = series.astype(str).str.len().max()
+        if max_len > 500:
+            return "text"
+        return "varchar"
+
+    return "varchar"
+
+def _get_storage_type(data_type: str) -> str:
+    """根据数据类型返回存储类型"""
+    type_map = {
+        "int32": "INTEGER",
+        "int64": "BIGINT",
+        "float64": "DECIMAL(38,2)",
+        "boolean": "BOOLEAN",
+        "date": "DATE",
+        "datetime": "TIMESTAMP",
+        "email": "VARCHAR(320)",
+        "text": "TEXT",
+        "varchar": "VARCHAR(255)",
+        "enum": "VARCHAR(100)"
+    }
+    return type_map.get(data_type, "VARCHAR(255)")
+
+def _analyze_file_and_generate_ontology(file_path: str, data_source_name: str) -> Optional[dict]:
+    """
+    根据文件真实内容动态生成本体类
+    """
+    try:
+        file_path_obj = Path(file_path)
+        suffix = file_path_obj.suffix.lower()
+
+        # 1. 读取文件
+        if suffix in ['.csv']:
+            df = pd.read_csv(file_path, encoding='utf-8')
+        elif suffix in ['.xlsx', '.xls']:
+            df = pd.read_excel(file_path)
+        elif suffix == '.json':
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    df = pd.DataFrame(data)
+                else:
+                    df = pd.DataFrame([data])
+        else:
+            # 不支持的格式，返回None使用默认
+            return None
+
+        if df.empty:
+            return None
+
+        # 2. 生成类名（从文件名推断）
+        class_name = file_path_obj.stem  # 去掉扩展名
+        # 移除特殊字符，转换为有效的类名
+        class_name = ''.join(c if c.isalnum() or c in ['_', ' '] else '' for c in class_name)
+        # 转换为PascalCase
+        class_name = ''.join(word.capitalize() for word in class_name.replace('_', ' ').split())
+        if not class_name:
+            class_name = "DataEntity"
+
+        # 3. 分析每一列，生成properties
+        properties = []
+        for i, col in enumerate(df.columns):
+            col_type = _infer_type(df[col])
+            prop = {
+                "name": str(col),
+                "label": str(col),
+                "type": col_type,
+                "confidence": 0.90,
+                "storage_type": _get_storage_type(col_type),
+                "is_primary_key": (i == 0),
+                "description": f"{col}字段的数据",
+                "source": f"{data_source_name} → {col}"
+            }
+            properties.append(prop)
+
+        # 4. 生成本体类
+        ontology_class = {
+            "name": class_name,
+            "label": class_name,
+            "description": f"从数据源 {data_source_name} 自动生成的本体类，包含 {len(properties)} 个属性",
+            "properties": properties,
+            "parent": None
+        }
+
+        # 5. 生成所有实体（保留所有数据行）
+        entities = []
+        for idx, row in df.iterrows():
+            entity = {"_id": f"{class_name.lower()}_{idx}"}
+            for col in df.columns:
+                val = row[col]
+                if pd.notna(val):
+                    entity[str(col)] = str(val)
+            entities.append(entity)
+
+        return {
+            "classes": [ontology_class],
+            "relations": [],
+            "entities": entities
+        }
+    except Exception as e:
+        print(f"解析文件失败 {file_path}: {e}")
+        return None
+
+
+def _infer_relations(ontologies: list[dict]) -> list[dict]:
+    """
+    推断本体之间的关系
+    基于字段名匹配策略：
+    1. 查找以ID/_id结尾的字段
+    2. 尝试匹配其他本体的类名
+    3. 生成关系
+    """
+    relations = []
+
+    # 构建本体类名到主键字段的映射
+    class_pk_map = {}
+    for ont in ontologies:
+        if ont.get('classes'):
+            for cls in ont['classes']:
+                class_name = cls['name']
+                # 找主键字段
+                pk_field = None
+                for prop in cls.get('properties', []):
+                    if prop.get('is_primary_key'):
+                        pk_field = prop['name']
+                        break
+                if pk_field:
+                    class_pk_map[class_name.lower()] = {
+                        'class_name': class_name,
+                        'pk_field': pk_field
+                    }
+
+    # 遍历所有本体，查找外键字段
+    for ont in ontologies:
+        if not ont.get('classes'):
+            continue
+
+        for cls in ont['classes']:
+            source_class = cls['name']
+
+            for prop in cls.get('properties', []):
+                field_name = prop['name']
+                field_lower = field_name.lower()
+
+                # 跳过主键
+                if prop.get('is_primary_key'):
+                    continue
+
+                # 查找以ID/_id/Id结尾的字段
+                if field_lower.endswith('id') or field_lower.endswith('_id'):
+                    # 提取前缀（去掉ID/_id/Id）
+                    prefix = field_lower
+                    if prefix.endswith('_id'):
+                        prefix = prefix[:-3]
+                    elif prefix.endswith('id'):
+                        prefix = prefix[:-2]
+
+                    # 尝试匹配其他本体
+                    for target_class_lower, target_info in class_pk_map.items():
+                        # 检查前缀是否匹配目标类名（忽略大小写）
+                        if prefix and target_class_lower.startswith(prefix):
+                            target_class = target_info['class_name']
+                            target_pk = target_info['pk_field']
+
+                            # 避免自引用（可选，如果需要支持自引用则移除此检查）
+                            if source_class == target_class:
+                                continue
+
+                            # 生成关系
+                            relation = {
+                                "source_class": source_class,
+                                "target_class": target_class,
+                                "relation_name": "references",
+                                "relation_type": "many_to_one",
+                                "confidence": 0.85,
+                                "cardinality": "n:1",
+                                "source_field": field_name,
+                                "target_field": target_pk,
+                                "inferred_from": "naming",
+                                "metadata": {}
+                            }
+                            relations.append(relation)
+
+    return relations
 
 # ─── 预置示例数据（开启时自动生成） ──────────────
 MOCK_CLASSES = [
@@ -247,16 +470,110 @@ _FIELD_LABEL_MAP: dict[str, tuple[str, str]] = {
 }
 
 
-def _mock_answer(question: str) -> dict[str, Any]:
+def _mock_answer(question: str, ontology_ids: list[str] = []) -> dict[str, Any]:
+    """
+    基于真实本体数据的简单问答
+    """
     q = question.lower()
-    for keyword, answer, sources in MOCK_QA:
-        if keyword in q:
-            return {"answer": answer, "sources": sources, "cypher_query": f"MATCH (n {{_ontology_id: '...'}}) WHERE n.name CONTAINS '{keyword}' RETURN n LIMIT 10"}
-    # 默认回答
+
+    # 收集所有相关本体的实体数据
+    all_entities = []
+    for ont_id in ontology_ids:
+        ont = _ontologies.get(ont_id)
+        if ont:
+            entities = ont.get("_entities", [])
+            # 为每个实体添加来源信息
+            for entity in entities:
+                all_entities.append({
+                    **entity,
+                    "_ontology_id": ont_id,
+                    "_ontology_name": ont.get("name", "")
+                })
+
+    if not all_entities:
+        return {
+            "answer": f"关于「{question}」：当前没有可查询的数据。请先上传并分析数据源。",
+            "sources": [],
+            "cypher_query": None,
+        }
+
+    # 简单关键词匹配搜索
+    matches = []
+    keywords = q.split()
+
+    for entity in all_entities:
+        score = 0
+        matched_fields = []
+
+        # 遍历实体的所有字段
+        for key, value in entity.items():
+            if key.startswith('_'):  # 跳过内部字段
+                continue
+
+            value_str = str(value).lower()
+
+            # 检查是否包含关键词
+            for keyword in keywords:
+                if keyword in value_str:
+                    score += 1
+                    matched_fields.append(f"{key}={value}")
+
+        if score > 0:
+            matches.append({
+                "entity": entity,
+                "score": score,
+                "matched_fields": matched_fields
+            })
+
+    # 按匹配度排序
+    matches.sort(key=lambda x: x["score"], reverse=True)
+
+    if not matches:
+        # 提供一些建议
+        sample_fields = set()
+        for entity in all_entities[:5]:
+            for key in entity.keys():
+                if not key.startswith('_'):
+                    sample_fields.add(key)
+
+        suggestions = "、".join(list(sample_fields)[:5]) if sample_fields else "姓名、联系方式等"
+
+        return {
+            "answer": f"关于「{question}」：在当前数据中未找到匹配结果。\n\n您可以尝试查询：{suggestions}",
+            "sources": [],
+            "cypher_query": None,
+        }
+
+    # 构建答案
+    top_matches = matches[:5]
+    answer_lines = [f"关于「{question}」，找到 {len(matches)} 条相关数据：\n"]
+
+    sources = []
+    for i, match in enumerate(top_matches, 1):
+        entity = match["entity"]
+
+        # 构建实体描述
+        display_fields = []
+        for key, value in entity.items():
+            if not key.startswith('_') and value:
+                display_fields.append(f"{key}: {value}")
+
+        answer_lines.append(f"{i}. " + " | ".join(display_fields[:5]))
+
+        # 添加到sources
+        sources.append({
+            "type": "entity",
+            "content": " | ".join(display_fields[:3]),
+            "entity_type": "Data"
+        })
+
+    if len(matches) > 5:
+        answer_lines.append(f"\n...还有 {len(matches) - 5} 条相关数据")
+
     return {
-        "answer": f"关于「{question}」：根据当前本体数据，我没有找到精确匹配的信息。你可以尝试问：**哪些员工在工程部？薪资最高的是谁？当前有哪些订单？**",
-        "sources": [],
-        "cypher_query": None,
+        "answer": "\n".join(answer_lines),
+        "sources": sources,
+        "cypher_query": f"MATCH (n) WHERE ... RETURN n LIMIT {len(matches)}"
     }
 
 # ═══════════════════════════════════════════════════
@@ -305,7 +622,7 @@ async def ds_upload(file: UploadFile = File(...), name: str = Form(default="")):
     return ds
 
 @app.post("/api/v1/data-sources/upload/batch")
-async def ds_upload_batch(files: list[UploadFile] = File(...)):
+async def ds_upload_batch(files: list[UploadFile]):
     results = []
     for file in files:
         dest = UPLOAD_DIR / (file.filename or "upload")
@@ -337,6 +654,27 @@ async def ds_test(source_id: str):
 async def ds_fields(source_id: str):
     """返回数据源可用字段列表（审核页用于添加属性）。"""
     return {"fields": _MOCK_FIELDS}
+
+@app.delete("/api/v1/data-sources/{source_id}")
+async def ds_delete(source_id: str):
+    """删除单个数据源"""
+    if source_id in _data_sources:
+        _data_sources.pop(source_id)
+        return {"ok": True, "message": "删除成功"}
+    return {"ok": False, "error": "数据源不存在"}
+
+class _BatchDeleteReq(BaseModel):
+    source_ids: list[str]
+
+@app.post("/api/v1/data-sources/batch-delete")
+async def ds_batch_delete(payload: _BatchDeleteReq):
+    """批量删除数据源"""
+    deleted = []
+    for sid in payload.source_ids:
+        if sid in _data_sources:
+            _data_sources.pop(sid)
+            deleted.append(sid)
+    return {"ok": True, "deleted_count": len(deleted), "deleted_ids": deleted}
 
 
 # ── 触发分析 + 模拟进度 ───────────────────────────
@@ -373,16 +711,33 @@ async def _simulate_progress(task_id: str, source_id: str):
     # 完成 → 创建本体
     await asyncio.sleep(1)
     ont_id = _uid()
-    ds_name = _data_sources.get(source_id, {}).get("name", "Unknown")
+    ds = _data_sources.get(source_id, {})
+    ds_name = ds.get("name", "Unknown")
+
+    # 尝试动态生成本体
+    file_path = ds.get("config", {}).get("file_path")
+    ontology_data = None
+    if file_path:
+        ontology_data = _analyze_file_and_generate_ontology(file_path, ds_name)
+
+    # 如果动态生成失败，使用默认
+    if ontology_data is None:
+        ontology_data = {
+            "classes": MOCK_CLASSES,
+            "relations": MOCK_RELATIONS,
+            "entities": MOCK_ENTITIES
+        }
+
     _ontologies[ont_id] = {
         "id": ont_id,
         "name": f"Ontology from {ds_name}",
         "description": f"自动编排生成 — 数据源: {ds_name}",
         "status": "pending",
         "data_source_id": source_id,
-        "classes": MOCK_CLASSES,
-        "relations": MOCK_RELATIONS,
-        "instances_count": len(MOCK_ENTITIES),
+        "classes": ontology_data["classes"],
+        "relations": ontology_data["relations"],
+        "instances_count": len(ontology_data.get("entities", [])),
+        "_entities": ontology_data.get("entities", []),  # 保存实体数据
         "created_at": _now(),
         "updated_at": _now(),
     }
@@ -430,12 +785,27 @@ async def _simulate_batch(batch_id: str, source_ids: list[str]):
     stages = ["准备中", "数据理解", "实体识别", "关系发现", "本体生成"]
     total = len(source_ids)
     for i, sid in enumerate(source_ids):
-        ds_name = _data_sources.get(sid, {}).get("name", "Unknown")
+        ds = _data_sources.get(sid, {})
+        ds_name = ds.get("name", "Unknown")
         base = int((i / total) * 80)
         for j, stage in enumerate(stages):
             await asyncio.sleep(0.6)
             _batches[batch_id].update(status="running", progress=base + j * 4, current_stage=f"[{ds_name}] {stage}")
-        # 为每个数据源生成本体
+
+        # 为每个数据源动态生成本体
+        file_path = ds.get("config", {}).get("file_path")
+        ontology_data = None
+        if file_path:
+            ontology_data = _analyze_file_and_generate_ontology(file_path, ds_name)
+
+        # 如果动态生成失败，使用默认
+        if ontology_data is None:
+            ontology_data = {
+                "classes": MOCK_CLASSES,
+                "relations": MOCK_RELATIONS,
+                "entities": MOCK_ENTITIES
+            }
+
         ont_id = _uid()
         _ontologies[ont_id] = {
             "id": ont_id,
@@ -444,14 +814,40 @@ async def _simulate_batch(batch_id: str, source_ids: list[str]):
             "status": "pending",
             "data_source_id": sid,
             "batch_id": batch_id,
-            "classes": MOCK_CLASSES,
-            "relations": MOCK_RELATIONS,
-            "instances_count": len(MOCK_ENTITIES),
+            "classes": ontology_data["classes"],
+            "relations": ontology_data["relations"],
+            "instances_count": len(ontology_data.get("entities", [])),
+            "_entities": ontology_data.get("entities", []),  # 保存实体数据用于图展示
             "created_at": _now(),
             "updated_at": _now(),
         }
         _batches[batch_id]["ontology_ids"].append(ont_id)
         _data_sources[sid]["status"] = "analyzed"
+
+    # 推断本体之间的关系
+    ontology_list = [_ontologies[oid] for oid in _batches[batch_id]["ontology_ids"] if oid in _ontologies]
+    inferred_relations = _infer_relations(ontology_list)
+
+    # 将推断的关系分配给每个本体
+    # 为每个本体收集与它相关的关系
+    for ont_id in _batches[batch_id]["ontology_ids"]:
+        if ont_id not in _ontologies:
+            continue
+
+        ont = _ontologies[ont_id]
+        if not ont.get('classes'):
+            continue
+
+        class_name = ont['classes'][0]['name']
+
+        # 收集涉及这个类的所有关系
+        ont_relations = []
+        for rel in inferred_relations:
+            if rel['source_class'] == class_name or rel['target_class'] == class_name:
+                ont_relations.append(rel)
+
+        _ontologies[ont_id]['relations'] = ont_relations
+
     # 全部完成
     _batches[batch_id].update(status="completed", progress=100, current_stage="分析完成")
 
@@ -518,21 +914,63 @@ async def ont_apis(ontology_id: str):
 # ── 图拓扑 ────────────────────────────────────────
 @app.get("/api/v1/ontologies/{ontology_id}/graph")
 async def ont_graph(ontology_id: str):
-    return {"nodes": MOCK_GRAPH_NODES, "edges": MOCK_GRAPH_EDGES}
+    """根据本体的真实数据生成图拓扑"""
+    ont = _ontologies.get(ontology_id)
+    if not ont:
+        return {"nodes": [], "edges": []}
+
+    # 获取实体数据
+    entities = ont.get("_entities", [])
+    if not entities:
+        # 如果没有保存的实体数据，返回空图
+        return {"nodes": [], "edges": []}
+
+    # 生成节点
+    nodes = []
+    for entity in entities[:20]:  # 最多显示20个节点
+        entity_id = entity.get("_id", "")
+        # 尝试找一个合适的标签字段
+        label = entity.get("name") or entity.get("姓名") or entity.get("名称") or entity_id
+
+        # 收集数据用于显示
+        data = {k: v for k, v in entity.items() if k != "_id"}
+
+        nodes.append({
+            "id": entity_id,
+            "label": str(label),
+            "data": data
+        })
+
+    # 生成边（基于关系）
+    edges = []
+    relations = ont.get("relations", [])
+
+    # TODO: 这里简化处理，实际需要根据实体数据的外键字段来连接
+    # 目前仅作为示例，不生成实际的边
+    # 如果需要真实的边，需要分析entities中的外键字段值
+
+    return {"nodes": nodes, "edges": edges}
 
 
 # ── 实体查询 ──────────────────────────────────────
 @app.get("/api/v1/ontologies/{ontology_id}/entities")
 async def ont_entities(ontology_id: str, class_name: Optional[str] = None):
-    filtered = MOCK_ENTITIES
-    # 简单 mock filter
-    if class_name == "Employee":
-        filtered = [e for e in MOCK_ENTITIES if "email" in e]
-    elif class_name == "Department":
-        filtered = [e for e in MOCK_ENTITIES if "department_name" in e]
-    elif class_name == "Order":
-        filtered = [e for e in MOCK_ENTITIES if "order_id" in e]
-    return {"entities": filtered, "count": len(filtered)}
+    """返回本体的真实实体数据"""
+    ont = _ontologies.get(ontology_id)
+    if not ont:
+        return {"entities": [], "count": 0}
+
+    # 获取本体保存的真实实体数据
+    entities = ont.get("_entities", [])
+
+    if not entities:
+        # 如果没有实体数据，返回空
+        return {"entities": [], "count": 0}
+
+    # 如果指定了class_name，可以尝试过滤（简化处理，暂不过滤）
+    # 因为每个本体通常只有一个类，所以直接返回所有实体
+
+    return {"entities": entities, "count": len(entities)}
 
 
 # ── 语义搜索 ──────────────────────────────────────
@@ -569,7 +1007,7 @@ class _ChatReq(BaseModel):
 async def ont_chat(ontology_id: str, payload: _ChatReq):
     # 模拟 0.8s 延迟
     await asyncio.sleep(0.8)
-    return _mock_answer(payload.question)
+    return _mock_answer(payload.question, [ontology_id])
 
 
 # ── 重新分析 ──────────────────────────────────────
@@ -688,13 +1126,210 @@ class _QAChatReq(BaseModel):
 @app.post("/api/v1/qa/sessions/{session_id}/chat")
 async def qa_chat(session_id: str, payload: _QAChatReq):
     await asyncio.sleep(0.8)
-    result = _mock_answer(payload.question)
-    # 附加来源本体 id
+    # 获取会话关联的本体 IDs
     s = _qa_sessions.get(session_id, {})
     ont_ids = s.get("ontology_ids", [])
+    # 传递本体 IDs 到搜索函数
+    result = _mock_answer(payload.question, ont_ids)
+    # 附加来源本体 id
     result["ontology_id"] = ont_ids[0] if ont_ids else None
     return result
 
+
+# ═══════════════════════════════════════════════════
+# ── 导入日志 ────────────────────────────────────────
+# ═══════════════════════════════════════════════════
+
+class _ImportRequest(BaseModel):
+    cleaning_config: dict = {"operators": []}
+
+@app.post("/api/v1/ontologies/{ontology_id}/import")
+async def import_ontology(ontology_id: str, payload: _ImportRequest):
+    """创建导入任务"""
+    if ontology_id not in _ontologies:
+        return {"error": "Ontology not found"}, 404
+
+    log_id = _uid()
+    ontology = _ontologies[ontology_id]
+
+    # 创建导入日志
+    _import_logs[log_id] = {
+        "id": log_id,
+        "ontology_id": ontology_id,
+        "batch_id": None,
+        "status": "running",
+        "total_records": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "cleaning_config": payload.cleaning_config,
+        "failed_records": [],
+        "error_summary": "",
+        "created_at": _now(),
+        "updated_at": _now(),
+        "completed_at": None,
+    }
+
+    # 模拟异步导入任务
+    asyncio.create_task(_simulate_import(log_id, ontology_id))
+
+    return {"import_log_id": log_id, "status": "running"}
+
+
+async def _simulate_import(log_id: str, ontology_id: str):
+    """模拟导入过程"""
+    await asyncio.sleep(2)  # 模拟处理延迟
+
+    log = _import_logs[log_id]
+    ontology = _ontologies.get(ontology_id)
+
+    if not ontology:
+        log["status"] = "failed"
+        log["error_summary"] = "Ontology not found"
+        log["completed_at"] = _now()
+        return
+
+    # 模拟导入成功
+    entities = ontology.get("_entities", [])
+    total = len(entities)
+
+    # 模拟90%成功，10%失败
+    import random
+    success = int(total * 0.9)
+    failed = total - success
+
+    failed_records = []
+    for i in range(failed):
+        failed_records.append({
+            "row_index": random.randint(0, total - 1),
+            "data": {"mock": "data"},
+            "error": "Mock import error"
+        })
+
+    log["total_records"] = total
+    log["success_count"] = success
+    log["failure_count"] = failed
+    log["failed_records"] = failed_records
+    log["status"] = "completed" if failed == 0 else "partial"
+    log["error_summary"] = f"Mock import error: {failed} records" if failed > 0 else ""
+    log["completed_at"] = _now()
+    log["updated_at"] = _now()
+
+
+@app.get("/api/v1/import-logs/")
+async def list_import_logs():
+    """获取所有导入日志"""
+    logs = sorted(_import_logs.values(), key=lambda x: x["created_at"], reverse=True)
+    return logs
+
+
+@app.get("/api/v1/import-logs/{log_id}")
+async def get_import_log(log_id: str):
+    """获取单个导入日志详情"""
+    log = _import_logs.get(log_id)
+    if not log:
+        return {"error": "Import log not found"}, 404
+    return log
+
+
+@app.get("/api/v1/import-logs/{log_id}/failed-records")
+async def get_failed_records(log_id: str, page: int = 1, page_size: int = 20):
+    """分页获取失败记录"""
+    log = _import_logs.get(log_id)
+    if not log:
+        return {"error": "Import log not found"}, 404
+
+    failed_records = log.get("failed_records", [])
+    total = len(failed_records)
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    return {
+        "records": failed_records[start:end],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@app.post("/api/v1/import-logs/{log_id}/retry")
+async def retry_failed_records(log_id: str, payload: dict):
+    """重新导入失败记录"""
+    log = _import_logs.get(log_id)
+    if not log:
+        return {"error": "Import log not found"}, 404
+
+    records = payload.get("records", [])
+    # 模拟重试成功
+    success_count = len(records)
+
+    return {
+        "success_count": success_count,
+        "failure_count": 0,
+        "total_success": log["success_count"] + success_count,
+        "total_failure": log["failure_count"] - success_count,
+    }
+
+
+@app.delete("/api/v1/import-logs/{log_id}")
+async def delete_import_log(log_id: str):
+    """删除导入日志"""
+    if log_id not in _import_logs:
+        return {"error": "Import log not found"}, 404
+
+    del _import_logs[log_id]
+    return {"ok": True, "message": f"Import log {log_id} deleted"}
+
+
+# ═══════════════════════════════════════════════════
+# ── 启动时自动加载已有文件 ─────────────────────────
+def _auto_load_existing_files():
+    """启动时自动加载 uploads 目录中的所有文件"""
+    import os
+    if not os.path.exists(UPLOAD_DIR):
+        return
+
+    files = [f for f in os.listdir(UPLOAD_DIR) if f.endswith(('.xlsx', '.csv', '.json'))]
+    if not files:
+        return
+
+    print(f"\n🔄 自动加载 {len(files)} 个已存在的数据文件...")
+    for filename in files:
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        # 创建数据源记录
+        ds_id = _uid()
+        ds_name = os.path.splitext(filename)[0]
+        _data_sources[ds_id] = {
+            "id": ds_id,
+            "name": ds_name,
+            "file_path": file_path,
+            "status": "analyzed",
+            "progress": 100,
+            "config": {"file_path": file_path},
+            "uploaded_at": _now(),
+            "updated_at": _now(),
+        }
+
+        # 生成本体数据
+        ontology_data = _analyze_file_and_generate_ontology(file_path, ds_name)
+        if ontology_data:
+            ont_id = _uid()
+            _ontologies[ont_id] = {
+                "id": ont_id,
+                "name": f"Ontology from {ds_name}",
+                "description": f"自动编排生成 — 数据源: {ds_name}",
+                "status": "pending",
+                "data_source_id": ds_id,
+                "classes": ontology_data["classes"],
+                "relations": ontology_data["relations"],
+                "instances_count": len(ontology_data.get("entities", [])),
+                "_entities": ontology_data.get("entities", []),
+                "created_at": _now(),
+                "updated_at": _now(),
+            }
+            _data_sources[ds_id]["ontology_id"] = ont_id
+            print(f"   ✓ {ds_name} → 本体ID: {ont_id[:8]}...")
+
+    print(f"✅ 加载完成！共 {len(_data_sources)} 个数据源，{len(_ontologies)} 个本体\n")
 
 # ═══════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -704,4 +1339,8 @@ if __name__ == "__main__":
     print("║   http://localhost:8001                   ║")
     print("║   Swagger: http://localhost:8001/docs     ║")
     print("╚══════════════════════════════════════════╝\n")
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+
+    # 自动加载已有文件
+    _auto_load_existing_files()
+
+    uvicorn.run(app, host="0.0.0.0", port=3001)

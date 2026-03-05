@@ -31,6 +31,7 @@ export interface OrchestrationTask {
 export interface OntologyProperty {
   name: string
   label?: string
+  display_name?: string  // 展示名称，放在主键右侧
   type: string
   description?: string
   confidence?: number
@@ -69,6 +70,8 @@ export interface Ontology {
   classes: OntologyClass[]
   relations: OntologyRelation[]
   instances_count: number
+  display_name?: string
+  conversion_config?: Record<string, any>
   created_at: string
   updated_at: string
 }
@@ -137,4 +140,55 @@ export interface QASession {
   embed_url: string
   status: string
   created_at: string
+}
+
+// ── 本体与数据源映射 ──────────────
+export interface OntologySourceMapping {
+  id: string
+  ontology_id: string
+  data_source_id: string
+  batch_id?: string
+  display_name: string
+  description: string
+  created_at: string
+}
+
+// ── 数据清洗配置 ──────────────────
+export interface DataCleaningOperator {
+  name: string
+  params?: Record<string, any>
+}
+
+export interface DataCleaningConfig {
+  operators: DataCleaningOperator[]
+}
+
+// ── 导入日志 ──────────────────────
+export interface ImportLog {
+  id: string
+  ontology_id: string
+  batch_id?: string
+  status: 'running' | 'completed' | 'failed' | 'partial'
+  total_records: number
+  success_count: number
+  failure_count: number
+  cleaning_config: DataCleaningConfig
+  failed_records: FailedRecord[]
+  error_summary: string
+  created_at: string
+  updated_at: string
+  completed_at?: string
+}
+
+export interface FailedRecord {
+  row_index: number
+  data: Record<string, any>
+  error: string
+}
+
+export interface FailedRecordsPage {
+  records: FailedRecord[]
+  total: number
+  page: number
+  page_size: number
 }

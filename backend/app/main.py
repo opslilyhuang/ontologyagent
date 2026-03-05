@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .core.config import settings
 from .core.database import init_db
 from .core.neo4j_client import close_neo4j_driver
-from .api import data_sources, ontologies, qa
+from .api import data_sources, ontologies, qa, import_logs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -47,6 +47,7 @@ app.add_middleware(
 app.include_router(data_sources.router)
 app.include_router(ontologies.router)
 app.include_router(qa.router)
+app.include_router(import_logs.router)
 
 
 # 健康检查

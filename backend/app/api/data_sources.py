@@ -63,7 +63,7 @@ async def upload_file(
 # ── 批量上传文件 ──────────────────────
 @router.post("/upload/batch", response_model=list[DataSourceResponse])
 async def upload_files_batch(
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile],
     db: AsyncSession = Depends(get_db),
 ):
     """一次上传多个文件，每个文件创建一个数据源。"""
@@ -387,6 +387,126 @@ async def _upd_batch(
         vals["ontology_ids"] = ontology_ids
     await db.execute(_upd(AnalysisBatch).where(AnalysisBatch.id == batch_id).values(**vals))
     await db.commit()
+
+
+# ── 删除单个数据源 ──────────────────────────
+@router.delete("/{source_id}")
+async def delete_source(source_id: str, db: AsyncSession = Depends(get_db)):
+    """删除数据源（包括关联的文件）"""
+    ds = await get_data_source(db, source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+
+    # 删除关联的上传文件
+    if ds.type.value == "file":
+        config = ds.config or {}
+        file_path = config.get("file_path")
+        if file_path:
+            try:
+                import os
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.info(f"Deleted file: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete file {file_path}: {e}")
+
+    # 删除数据库记录
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(DataSource).where(DataSource.id == source_id))
+    await db.commit()
+
+    return {"ok": True, "message": f"Data source {source_id} deleted"}
+
+
+# ── 批量删除数据源 ──────────────────────────
+@router.post("/batch-delete")
+async def batch_delete_sources(
+    payload: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """批量删除数据源"""
+    source_ids = payload.get("source_ids", [])
+    if not source_ids:
+        raise HTTPException(status_code=400, detail="source_ids is required")
+
+    deleted_ids = []
+    for source_id in source_ids:
+        try:
+            ds = await get_data_source(db, source_id)
+            if ds:
+                # 删除关联文件
+                if ds.type.value == "file":
+                    config = ds.config or {}
+                    file_path = config.get("file_path")
+                    if file_path:
+                        try:
+                            import os
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete file {file_path}: {e}")
+
+                # 删除数据库记录
+                from sqlalchemy import delete as sa_delete
+                await db.execute(sa_delete(DataSource).where(DataSource.id == source_id))
+                deleted_ids.append(source_id)
+        except Exception as e:
+            logger.error(f"Failed to delete source {source_id}: {e}")
+
+    await db.commit()
+    return {"ok": True, "deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+
+
+# ── 获取数据源的所有本体 ─────────────────────
+@router.get("/{source_id}/ontologies")
+async def get_source_ontologies(source_id: str, db: AsyncSession = Depends(get_db)):
+    """获取数据源关联的所有本体（支持多次转换）"""
+    from ..models.database import OntologySourceMapping
+    from sqlalchemy import select as _select
+
+    # 先查询映射表
+    result = await db.execute(
+        _select(OntologySourceMapping)
+        .where(OntologySourceMapping.data_source_id == source_id)
+        .order_by(OntologySourceMapping.created_at.desc())
+    )
+    mappings = list(result.scalars())
+
+    if mappings:
+        # 使用映射表（支持多次转换）
+        return [
+            {
+                "id": m.id,
+                "ontology_id": m.ontology_id,
+                "data_source_id": m.data_source_id,
+                "batch_id": m.batch_id,
+                "display_name": m.display_name,
+                "description": m.description,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in mappings
+        ]
+    else:
+        # 兼容旧版本：直接查询本体表
+        result = await db.execute(
+            _select(Ontology)
+            .where(Ontology.data_source_id == source_id)
+            .order_by(Ontology.created_at.desc())
+        )
+        ontologies = list(result.scalars())
+
+        return [
+            {
+                "id": o.id,  # mapping id = ontology id
+                "ontology_id": o.id,
+                "data_source_id": o.data_source_id,
+                "batch_id": o.batch_id,
+                "display_name": o.display_name or o.name,
+                "description": o.description,
+                "created_at": o.created_at.isoformat() if o.created_at else None,
+            }
+            for o in ontologies
+        ]
 
 
 # ── 序列化 ───────────────────────────────────

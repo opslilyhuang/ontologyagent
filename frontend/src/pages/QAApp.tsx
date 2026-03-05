@@ -130,28 +130,49 @@ export function QAAppPage() {
         {/* 创建表单 */}
         {creating && (
           <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 space-y-2">
-            <input type="text" value={newName} onChange={e => setNewName(e.target.value)} placeholder={t('qa.create.name')}
-              className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
-            <p className="text-[10px] text-slate-500 font-medium">{t('qa.create.mount')}</p>
-            <div className="space-y-1 max-h-32 overflow-y-auto">
-              {ontologies.map(o => (
-                <label key={o.id} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                  <input type="checkbox" checked={newOntologyIds.has(o.id)}
-                    onChange={() => {
-                      setNewOntologyIds(prev => {
-                        const n = new Set(prev); n.has(o.id) ? n.delete(o.id) : n.add(o.id); return n
-                      })
-                    }}
-                    className="w-3.5 h-3.5 accent-indigo-600" />
-                  <span className="truncate">{o.name}</span>
-                </label>
-              ))}
+            <div>
+              <label className="block text-[10px] text-slate-500 font-medium mb-1">会话名称 *</label>
+              <input type="text" value={newName} onChange={e => setNewName(e.target.value)} placeholder="例如：物流数据问答"
+                className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
             </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 font-medium mb-1">选择本体 * ({newOntologyIds.size} 个已选)</label>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {ontologies.length === 0 ? (
+                  <p className="text-xs text-slate-400 italic py-2">暂无可用本体</p>
+                ) : (
+                  ontologies.map(o => (
+                    <label key={o.id} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer hover:bg-white rounded px-1 py-0.5 transition">
+                      <input type="checkbox" checked={newOntologyIds.has(o.id)}
+                        onChange={() => {
+                          setNewOntologyIds(prev => {
+                            const n = new Set(prev); n.has(o.id) ? n.delete(o.id) : n.add(o.id); return n
+                          })
+                        }}
+                        className="w-3.5 h-3.5 accent-indigo-600" />
+                      <span className="truncate">{o.name}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+            {/* 调试信息 */}
+            <div className="text-[10px] text-slate-500 space-y-0.5">
+              <div>名称: {newName ? '✓ 已填写' : '✗ 未填写'}</div>
+              <div>本体: {newOntologyIds.size > 0 ? `✓ 已选 ${newOntologyIds.size} 个` : '✗ 未选择'}</div>
+            </div>
+
             <div className="flex gap-2 pt-1">
-              <button onClick={handleCreate} disabled={!newName.trim() || newOntologyIds.size === 0}
-                className="text-xs bg-indigo-600 text-white px-3 py-1 rounded-lg hover:bg-indigo-700 disabled:opacity-40 transition">{t('qa.create.btn')}</button>
+              <button
+                onClick={handleCreate}
+                disabled={!newName.trim() || newOntologyIds.size === 0}
+                className="text-xs bg-indigo-600 text-white px-3 py-1 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                title={!newName.trim() ? '请填写会话名称' : newOntologyIds.size === 0 ? '请至少选择一个本体' : '可以创建了'}
+              >
+                创建会话
+              </button>
               <button onClick={() => setCreating(false)}
-                className="text-xs text-slate-500 hover:text-slate-700 transition">{t('qa.create.cancel')}</button>
+                className="text-xs text-slate-500 hover:text-slate-700 transition">取消</button>
             </div>
           </div>
         )}

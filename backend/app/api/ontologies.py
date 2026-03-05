@@ -108,6 +108,30 @@ async def publish(ontology_id: str, db: AsyncSession = Depends(get_db)):
     return _ont_to_response(ont)
 
 
+# ── 导入本体到本体管理 ──────────────────────
+@router.post("/{ontology_id}/import")
+async def import_ontology(
+    ontology_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """导入本体到本体管理（Neo4j/Milvus）"""
+    cleaning_config = payload.get("cleaning_config", {"operators": []})
+
+    # 验证本体存在
+    ont = await get_ontology(db, ontology_id)
+    if not ont:
+        raise HTTPException(status_code=404, detail="Ontology not found")
+
+    # 创建导入任务
+    from ..services.import_service import OntologyImportService
+    import_service = OntologyImportService()
+
+    log_id = await import_service.import_ontology_data(db, ontology_id, cleaning_config)
+
+    return {"import_log_id": log_id, "status": "running"}
+
+
 
 
 # ── 重新分析本体 ────────────────────────

@@ -4,6 +4,7 @@ const zh: Record<string, string> = {
   'layout.nav.dashboard':      '仪表板',
   'layout.nav.ingest':         '数据接入',
   'layout.nav.ontologies':     '本体管理',
+  'layout.nav.importlogs':     '导入日志',
   'layout.nav.qa':             '智能问答',
   'layout.status':             '系统正常',
   'layout.header.desc':        '多模态本体编排智能代理',

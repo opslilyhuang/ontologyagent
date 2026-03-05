@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Loader2, Check, RotateCcw, ArrowLeft, Plus, X } from 'lucide-react'
+import { Loader2, Check, RotateCcw, ArrowLeft, Plus, X, Trash2, Edit2, Settings } from 'lucide-react'
 import { dataSources, ontologyApi } from '@/services/api'
-import type { AnalysisBatch, Ontology, OntologyProperty, SourceField } from '@/types'
+import type { AnalysisBatch, Ontology, OntologyProperty, SourceField, OntologyRelation, DataCleaningConfig } from '@/types'
 import { useT } from '@/i18n'
+import { DataCleaningDialog } from '@/components/DataCleaningDialog'
 
 // ── constants ──────────────────────────────────────
 const STAGE_LABEL_KEYS = ['review.stage.understand', 'review.stage.entity', 'review.stage.relation', 'review.stage.generate']
@@ -30,6 +31,19 @@ export function AnalysisReviewPage() {
   const [reanalyzeText,    setReanalyzeText]    = useState('')
   const [reanalyzing,      setReanalyzing]      = useState(false)
   const [saving,           setSaving]           = useState(false)
+  const [cleaningDialogVisible, setCleaningDialogVisible] = useState(false)
+  const [importLoading,    setImportLoading]    = useState(false)
+  const [addingRelation,   setAddingRelation]   = useState<string | null>(null) // ontology ID
+  const [editingRelation,  setEditingRelation]  = useState<{ ontId: string; relIdx: number } | null>(null)
+  const [newRelation,      setNewRelation]      = useState<Partial<OntologyRelation>>({
+    source_class: '',
+    target_class: '',
+    relation_name: 'references',
+    cardinality: 'n:1',
+    confidence: 0.85,
+    source_field: '',
+    target_field: ''
+  })
 
   const pollRef     = useRef<ReturnType<typeof setInterval> | null>(null)
   const prevNameRef = useRef<Record<string, string>>({}) // key: ontId:clsName:pIdx → name on focus
@@ -98,11 +112,17 @@ export function AnalysisReviewPage() {
   const editPropType = (ontId: string, clsName: string, pIdx: number, val: string) => {
     mutateProps(ontId, clsName, props => props.map((p, i) => i === pIdx ? { ...p, type: val } : p))
   }
+  const editPropDisplayName = (ontId: string, clsName: string, pIdx: number, val: string) => {
+    mutateProps(ontId, clsName, props => props.map((p, i) => i === pIdx ? { ...p, display_name: val } : p))
+  }
+  const togglePrimaryKey = (ontId: string, clsName: string, pIdx: number) => {
+    mutateProps(ontId, clsName, props => props.map((p, i) => i === pIdx ? { ...p, is_primary_key: !p.is_primary_key } : p))
+  }
   const deleteProp = (ontId: string, clsName: string, pIdx: number) => {
     mutateProps(ontId, clsName, props => props.filter((_, i) => i !== pIdx))
   }
 
-  // ── name blur → generate label ──
+  // ── name blur → generate label and display_name ──
   const onPropNameBlur = async (ontId: string, clsName: string, pIdx: number, currentName: string) => {
     const refKey  = `${ontId}:${clsName}:${pIdx}`
     const oldName = prevNameRef.current[refKey]
@@ -115,7 +135,9 @@ export function AnalysisReviewPage() {
       setEdited(prev => {
         const ont = prev[ontId]; if (!ont) return prev
         return { ...prev, [ontId]: { ...ont, classes: ont.classes.map(c =>
-          c.name === clsName ? { ...c, properties: c.properties.map((p, i) => i === pIdx ? { ...p, label: res.label, description: res.description } : p) } : c
+          c.name === clsName ? { ...c, properties: c.properties.map((p, i) =>
+            i === pIdx ? { ...p, label: res.label, description: res.description, display_name: p.display_name || res.label } : p
+          ) } : c
         ) } }
       })
     } catch { /* ignore */ }
@@ -127,10 +149,10 @@ export function AnalysisReviewPage() {
     const dsId = ontologies.find(o => o.id === ontId)?.data_source_id || ''
     const field = (sourceFields[dsId] || []).find(f => f.name === selectedField)
     if (!field) return
-    const newProp: OntologyProperty = { name: field.name, type: 'varchar', source: field.source, is_primary_key: false }
+    const newProp: OntologyProperty = { name: field.name, type: 'varchar', source: field.source, is_primary_key: false, display_name: '' }
     mutateProps(ontId, clsName, props => [...props, newProp])
     setAddingProp(null); setSelectedField('')
-    // auto-generate label
+    // auto-generate label and display_name
     const ont = edited[ontId]; if (!ont) return
     const pIdx = (ont.classes.find(c => c.name === clsName)?.properties.length ?? 0) // index of the just-added prop
     const lKey = `${ontId}:${clsName}:${pIdx}`
@@ -140,7 +162,9 @@ export function AnalysisReviewPage() {
       setEdited(prev => {
         const o = prev[ontId]; if (!o) return prev
         return { ...prev, [ontId]: { ...o, classes: o.classes.map(c =>
-          c.name === clsName ? { ...c, properties: c.properties.map(p => p.name === field.name && !p.label ? { ...p, label: res.label, description: res.description } : p) } : c
+          c.name === clsName ? { ...c, properties: c.properties.map(p =>
+            p.name === field.name && !p.label ? { ...p, label: res.label, description: res.description, display_name: res.label } : p
+          ) } : c
         ) } }
       })
     } catch { /* ignore */ }
@@ -159,17 +183,99 @@ export function AnalysisReviewPage() {
     finally { setReanalyzing(false) }
   }
 
+  // ── 关系管理 ──
+  const deleteRelation = (ontId: string, relIdx: number) => {
+    if (!confirm('确定要删除这个关系吗？')) return
+    setEdited(prev => {
+      const ont = prev[ontId]
+      if (!ont) return prev
+      const newRelations = ont.relations.filter((_, i) => i !== relIdx)
+      return { ...prev, [ontId]: { ...ont, relations: newRelations } }
+    })
+  }
+
+  const startAddRelation = (ontId: string) => {
+    const ont = edited[ontId]
+    if (!ont || ont.classes.length === 0) return
+    // 获取所有可用的类名
+    const allClasses = ontologies.flatMap(o => o.classes.map(c => c.name))
+    setNewRelation({
+      source_class: ont.classes[0].name,
+      target_class: allClasses.find(c => c !== ont.classes[0].name) || '',
+      relation_name: 'references',
+      cardinality: 'n:1',
+      confidence: 0.85,
+      source_field: '',
+      target_field: ''
+    })
+    setAddingRelation(ontId)
+  }
+
+  const addRelation = (ontId: string) => {
+    if (!newRelation.source_class || !newRelation.target_class) {
+      alert('请填写源类和目标类')
+      return
+    }
+    setEdited(prev => {
+      const ont = prev[ontId]
+      if (!ont) return prev
+      const relation: OntologyRelation = {
+        source_class: newRelation.source_class!,
+        target_class: newRelation.target_class!,
+        relation_name: newRelation.relation_name || 'references',
+        relation_type: 'many_to_one',
+        confidence: newRelation.confidence || 0.85,
+        cardinality: newRelation.cardinality || 'n:1',
+        source_field: newRelation.source_field,
+        target_field: newRelation.target_field,
+        inferred_from: 'manual',
+        metadata: {}
+      }
+      return { ...prev, [ontId]: { ...ont, relations: [...ont.relations, relation] } }
+    })
+    setAddingRelation(null)
+  }
+
   // ── save ──
   const handleSave = async () => {
     setSaving(true)
     try {
       for (const ont of ontologies) {
         const e = edited[ont.id]; if (!e) continue
-        await ontologyApi.update(ont.id, { classes: e.classes })
+        await ontologyApi.update(ont.id, { classes: e.classes, relations: e.relations })
       }
       navigate('/ontologies')
     } catch (err) { alert(t('review.err.save') + (err as Error).message) }
     finally { setSaving(false) }
+  }
+
+  // ── import with data cleaning ──
+  const handleImport = async (cleaningConfig: DataCleaningConfig) => {
+    setCleaningDialogVisible(false)
+    setImportLoading(true)
+
+    try {
+      // 保存本体更新
+      for (const ont of ontologies) {
+        const e = edited[ont.id]
+        if (e) {
+          await ontologyApi.update(ont.id, { classes: e.classes, relations: e.relations })
+        }
+      }
+
+      // 创建导入任务
+      const importPromises = ontologies.map(ont =>
+        ontologyApi.import(ont.id, cleaningConfig)
+      )
+      await Promise.all(importPromises)
+
+      alert('导入任务已创建，正在处理中...')
+      navigate('/import-logs')
+    } catch (err) {
+      alert('导入失败: ' + (err as Error).message)
+    } finally {
+      setImportLoading(false)
+    }
   }
 
   // ── available fields for "add property" ──
@@ -299,8 +405,105 @@ export function AnalysisReviewPage() {
                   <div className="p-5 border-b border-slate-100">
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{t('review.rel.title')}</p>
+                      <button
+                        onClick={() => startAddRelation(ont.id)}
+                        className="text-xs bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-2.5 py-1 rounded-lg flex items-center gap-1 transition"
+                      >
+                        <Plus size={12} /> 添加关系
+                      </button>
                     </div>
-                    {ont.relations.length === 0 ? (
+
+                    {/* 添加关系表单 */}
+                    {addingRelation === ont.id && (
+                      <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 mb-3">
+                        <p className="text-xs font-medium text-indigo-700 mb-3">添加新关系</p>
+                        <div className="grid grid-cols-2 gap-3 mb-3">
+                          <div>
+                            <label className="block text-xs text-slate-600 mb-1">源类</label>
+                            <select
+                              value={newRelation.source_class}
+                              onChange={e => setNewRelation(prev => ({ ...prev, source_class: e.target.value }))}
+                              className="w-full border border-indigo-200 rounded-lg px-2 py-1.5 text-xs"
+                            >
+                              {ontologies.flatMap(o => o.classes.map(c => (
+                                <option key={c.name} value={c.name}>{c.name}</option>
+                              )))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-600 mb-1">目标类</label>
+                            <select
+                              value={newRelation.target_class}
+                              onChange={e => setNewRelation(prev => ({ ...prev, target_class: e.target.value }))}
+                              className="w-full border border-indigo-200 rounded-lg px-2 py-1.5 text-xs"
+                            >
+                              {ontologies.flatMap(o => o.classes.map(c => (
+                                <option key={c.name} value={c.name}>{c.name}</option>
+                              )))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-600 mb-1">源字段</label>
+                            <input
+                              type="text"
+                              value={newRelation.source_field}
+                              onChange={e => setNewRelation(prev => ({ ...prev, source_field: e.target.value }))}
+                              placeholder="例如: 司机ID"
+                              className="w-full border border-indigo-200 rounded-lg px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-600 mb-1">目标字段</label>
+                            <input
+                              type="text"
+                              value={newRelation.target_field}
+                              onChange={e => setNewRelation(prev => ({ ...prev, target_field: e.target.value }))}
+                              placeholder="例如: 司机ID"
+                              className="w-full border border-indigo-200 rounded-lg px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-600 mb-1">关系类型</label>
+                            <select
+                              value={newRelation.cardinality}
+                              onChange={e => setNewRelation(prev => ({ ...prev, cardinality: e.target.value as any }))}
+                              className="w-full border border-indigo-200 rounded-lg px-2 py-1.5 text-xs"
+                            >
+                              <option value="n:1">多对一 (n:1)</option>
+                              <option value="1:n">一对多 (1:n)</option>
+                              <option value="1:1">一对一 (1:1)</option>
+                              <option value="n:m">多对多 (n:m)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-600 mb-1">关系名称</label>
+                            <input
+                              type="text"
+                              value={newRelation.relation_name}
+                              onChange={e => setNewRelation(prev => ({ ...prev, relation_name: e.target.value }))}
+                              placeholder="references"
+                              className="w-full border border-indigo-200 rounded-lg px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => addRelation(ont.id)}
+                            className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition"
+                          >
+                            确认添加
+                          </button>
+                          <button
+                            onClick={() => setAddingRelation(null)}
+                            className="text-xs text-slate-500 hover:text-slate-700 transition"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {e.relations.length === 0 ? (
                       <p className="text-xs text-slate-400 italic">{t('review.rel.empty')}</p>
                     ) : (
                       <div className="overflow-x-auto rounded-xl border border-slate-100">
@@ -314,18 +517,28 @@ export function AnalysisReviewPage() {
                               <th className="px-3 py-2 font-semibold">{t('review.rel.tgtField')}</th>
                               <th className="px-3 py-2 font-semibold">{t('review.rel.type')}</th>
                               <th className="px-3 py-2 font-semibold">{t('review.rel.confidence')}</th>
+                              <th className="px-3 py-2 font-semibold">操作</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {ont.relations.map((r, i) => (
-                              <tr key={i} className="border-t border-slate-100">
+                            {e.relations.map((r, i) => (
+                              <tr key={i} className="border-t border-slate-100 hover:bg-slate-50">
                                 <td className="px-3 py-2"><span className="bg-indigo-50 text-indigo-700 font-semibold px-2 py-0.5 rounded-lg">{r.source_class}</span></td>
                                 <td className="px-3 py-2"><span className="bg-violet-50 text-violet-700 font-semibold px-2 py-0.5 rounded-lg">{r.target_class}</span></td>
                                 <td className="px-3 py-2 text-slate-600 font-medium">{r.relation_name}</td>
-                                <td className="px-3 py-2 text-slate-500 font-mono">{r.source_field || '—'}</td>
-                                <td className="px-3 py-2 text-slate-500 font-mono">{r.target_field || '—'}</td>
+                                <td className="px-3 py-2 text-slate-500 font-mono text-[10px]">{r.source_field || '—'}</td>
+                                <td className="px-3 py-2 text-slate-500 font-mono text-[10px]">{r.target_field || '—'}</td>
                                 <td className="px-3 py-2"><span className="bg-slate-50 text-slate-600 px-2 py-0.5 rounded-lg font-medium">{t(CARD_KEYS[r.cardinality] || 'review.card.n1')}</span></td>
                                 <td className="px-3 py-2 text-slate-400">{(r.confidence * 100).toFixed(0)}%</td>
+                                <td className="px-3 py-2">
+                                  <button
+                                    onClick={() => deleteRelation(ont.id, i)}
+                                    className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition"
+                                    title="删除关系"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -400,7 +613,8 @@ export function AnalysisReviewPage() {
                                   <th className="px-3 py-2 font-semibold">{t('review.prop.label')}</th>
                                   <th className="px-3 py-2 font-semibold">{t('review.prop.type')}</th>
                                   <th className="px-3 py-2 font-semibold">{t('review.prop.source')}</th>
-                                  <th className="px-3 py-2 font-semibold text-center w-12">{t('review.prop.pk')}</th>
+                                  <th className="px-3 py-2 font-semibold text-center w-16">{t('review.prop.pk')}</th>
+                                  <th className="px-3 py-2 font-semibold">展示名称</th>
                                   <th className="px-3 py-2 w-10"></th>
                                 </tr>
                               </thead>
@@ -446,11 +660,25 @@ export function AnalysisReviewPage() {
                                       <td className="px-3 py-2">
                                         <span className="text-slate-500 font-mono text-[11px]">{p.source || '—'}</span>
                                       </td>
-                                      {/* primary key badge */}
+                                      {/* primary key checkbox */}
                                       <td className="px-3 py-2 text-center">
-                                        {p.is_primary_key
-                                          ? <span className="inline-block bg-amber-50 text-amber-700 font-bold text-[10px] px-1.5 py-0.5 rounded border border-amber-200">PK</span>
-                                          : <span className="text-slate-300">—</span>}
+                                        <input
+                                          type="checkbox"
+                                          checked={p.is_primary_key || false}
+                                          onChange={() => togglePrimaryKey(ont.id, cls.name, pIdx)}
+                                          className="w-4 h-4 text-amber-600 bg-gray-100 border-gray-300 rounded focus:ring-amber-500 focus:ring-2 cursor-pointer"
+                                          title="设置为主键"
+                                        />
+                                      </td>
+                                      {/* display name */}
+                                      <td className="px-3 py-2">
+                                        <input
+                                          type="text"
+                                          value={p.display_name || ''}
+                                          onChange={e => editPropDisplayName(ont.id, cls.name, pIdx, e.target.value)}
+                                          placeholder="展示名称"
+                                          className="w-full min-w-[100px] border border-slate-200 rounded-lg px-2 py-1 text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-transparent"
+                                        />
                                       </td>
                                       {/* delete btn */}
                                       <td className="px-3 py-2">
@@ -503,12 +731,44 @@ export function AnalysisReviewPage() {
         })}
 
         {/* confirm button */}
-        <div className="mt-6 flex justify-end">
-          <button onClick={handleSave} disabled={saving}
-            className="bg-indigo-600 text-white px-8 py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 transition">
-            {saving ? t('review.saving') : t('review.save')}
+        <div className="mt-6 flex items-center justify-between gap-4">
+          <button
+            onClick={() => navigate('/ingest')}
+            className="text-slate-600 hover:text-slate-800 px-4 py-2.5 rounded-xl text-sm font-medium transition"
+          >
+            取消
           </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setCleaningDialogVisible(true)}
+              className="flex items-center gap-2 bg-slate-100 text-slate-700 px-6 py-2.5 rounded-xl text-sm font-semibold hover:bg-slate-200 transition"
+            >
+              <Settings size={16} />
+              数据清洗设置
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="bg-slate-600 text-white px-6 py-2.5 rounded-xl text-sm font-semibold hover:bg-slate-700 disabled:opacity-40 transition"
+            >
+              {saving ? t('review.saving') : '保存'}
+            </button>
+            <button
+              onClick={() => setCleaningDialogVisible(true)}
+              disabled={importLoading}
+              className="bg-indigo-600 text-white px-8 py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 transition"
+            >
+              {importLoading ? '导入中...' : '导入本体管理'}
+            </button>
+          </div>
         </div>
+
+        {/* Data Cleaning Dialog */}
+        <DataCleaningDialog
+          visible={cleaningDialogVisible}
+          onClose={() => setCleaningDialogVisible(false)}
+          onConfirm={handleImport}
+        />
       </div>
     </div>
   )

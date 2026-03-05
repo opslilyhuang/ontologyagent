@@ -68,6 +68,10 @@ class Ontology(Base):
     relations = Column(JSONB, default=list)     # [OntologyRelation, ...]
     instances_count = Column(Integer, default=0)
 
+    # 新增字段：支持多次转换和自定义名称
+    display_name = Column(String(256), nullable=True)  # 用户自定义名称，优先显示
+    conversion_config = Column(JSONB, default=dict)    # 本次转换的配置（选择的表/字段）
+
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
     published_at = Column(DateTime(timezone=True), nullable=True)
@@ -116,7 +120,7 @@ class ChatMessage(Base):
     ontology_id = Column(String(64), ForeignKey("ontologies.id"), nullable=False)
     role = Column(String(16), nullable=False)   # user / assistant
     content = Column(Text, nullable=False)
-    metadata = Column(JSONB, default=dict)      # 用于存储检索到的图片/实体等
+    message_metadata = Column(JSONB, default=dict)      # 用于存储检索到的图片/实体等
     created_at = Column(DateTime(timezone=True), default=_now)
 
 
@@ -159,3 +163,50 @@ class QASession(Base):
     status       = Column(String(32), default="active")
     created_at   = Column(DateTime(timezone=True), default=_now)
     updated_at   = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ─────────────────────── 本体数据源映射 ───────────────────
+class OntologySourceMapping(Base):
+    """支持一个数据源多次转换成不同本体的关联关系。"""
+    __tablename__ = "ontology_source_mappings"
+
+    id = Column(String(64), primary_key=True, default=_uuid)
+    ontology_id = Column(String(64), ForeignKey("ontologies.id"), nullable=False)
+    data_source_id = Column(String(64), ForeignKey("data_sources.id"), nullable=False)
+    batch_id = Column(String(64), nullable=True)
+    display_name = Column(String(256), nullable=False)  # 用户自定义的本体名称
+    description = Column(Text, default="")              # 本次转换说明
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+
+# ─────────────────────── 导入日志 ─────────────────────
+class ImportLogStatus(PyEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL = "partial"  # 部分成功
+
+
+class ImportLog(Base):
+    """记录每次导入本体管理的日志，包括成功/失败统计。"""
+    __tablename__ = "import_logs"
+
+    id = Column(String(64), primary_key=True, default=_uuid)
+    ontology_id = Column(String(64), ForeignKey("ontologies.id"), nullable=False)
+    batch_id = Column(String(64), nullable=True)
+    status = Column(Enum(ImportLogStatus), default=ImportLogStatus.RUNNING)
+
+    # 统计数据
+    total_records = Column(Integer, default=0)
+    success_count = Column(Integer, default=0)
+    failure_count = Column(Integer, default=0)
+
+    # 配置和结果
+    cleaning_config = Column(JSONB, default=dict)  # 使用的数据清洗配置
+    failed_records = Column(JSONB, default=list)   # 失败记录详情（分页展示）
+    error_summary = Column(Text, default="")       # 错误摘要
+
+    # 时间信息
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)

@@ -4,6 +4,7 @@ const en: Record<string, string> = {
   'layout.nav.dashboard':      'Dashboard',
   'layout.nav.ingest':         'Data Ingestion',
   'layout.nav.ontologies':     'Ontology Management',
+  'layout.nav.importlogs':     'Import Logs',
   'layout.nav.qa':             'Smart Q&A',
   'layout.status':             'System Normal',
   'layout.header.desc':        'Multimodal Ontology Orchestration Agent',

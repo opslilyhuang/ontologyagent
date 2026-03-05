@@ -1,5 +1,34 @@
-node_modules/
+# 日志文件
+*.log
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Node
+node_modules/
+dist/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 环境变量
 .env
-uploads/
+.env.local
+
+# 上传文件
+uploads/*
+!uploads/.gitkeep
+
+# 测试文件
+test_*.html

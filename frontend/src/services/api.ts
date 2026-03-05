@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { DataSource, CreateDataSourcePayload, OrchestrationTask, Ontology, ChatMessage, GraphNode, GraphEdge, GeneratedAPI, AnalysisBatch, BatchInfo, QASession, SourceField } from '@/types'
+import type { DataSource, CreateDataSourcePayload, OrchestrationTask, Ontology, ChatMessage, GraphNode, GraphEdge, GeneratedAPI, AnalysisBatch, BatchInfo, QASession, SourceField, OntologySourceMapping, DataCleaningConfig, ImportLog, FailedRecordsPage } from '@/types'
 
 const BASE = '/api/v1'
 
@@ -24,6 +24,8 @@ export const dataSources = {
 
   list: () => client.get<DataSource[]>('/data-sources/').then(r => r.data),
   get: (id: string) => client.get<DataSource>(`/data-sources/${id}`).then(r => r.data),
+  delete: (id: string) => client.delete<{ ok: boolean; message?: string; error?: string }>(`/data-sources/${id}`).then(r => r.data),
+  batchDelete: (sourceIds: string[]) => client.post<{ ok: boolean; deleted_count: number; deleted_ids: string[] }>('/data-sources/batch-delete', { source_ids: sourceIds }).then(r => r.data),
 
   testConnection: (id: string) => client.post<{ ok: boolean; error?: string }>(`/data-sources/${id}/test-connection`).then(r => r.data),
   analyze:        (id: string) => client.post<OrchestrationTask>(`/data-sources/${id}/analyze`).then(r => r.data),
@@ -36,6 +38,10 @@ export const dataSources = {
     client.post<{ batch_id: string; status: string; source_count: number }>('/data-sources/batch-analyze', { source_ids: sourceIds }).then(r => r.data),
   getBatch:     (batchId: string) => client.get<AnalysisBatch>(`/data-sources/batch/${batchId}`).then(r => r.data),
   listBatches:  () => client.get<BatchInfo[]>('/data-sources/batches').then(r => r.data),
+
+  // ── 获取数据源的所有本体 ──
+  getOntologies: (sourceId: string) =>
+    client.get<OntologySourceMapping[]>(`/data-sources/${sourceId}/ontologies`).then(r => r.data),
 }
 
 // ── 本体 ────────────────────────────────────
@@ -74,6 +80,13 @@ export const ontologyApi = {
     a.href = url; a.download = 'ontology_package.zip'; a.click()
     URL.revokeObjectURL(url)
   },
+
+  // ── 导入本体 ──
+  import: (ontologyId: string, cleaningConfig: DataCleaningConfig) =>
+    client.post<{ import_log_id: string; status: string }>(
+      `/ontologies/${ontologyId}/import`,
+      { cleaning_config: cleaningConfig }
+    ).then(r => r.data),
 }
 
 // ── 智能问答应用 ────────────────────────────
@@ -90,6 +103,30 @@ export const qaApi = {
       `/qa/sessions/${sessionId}/chat`,
       { question, history }
     ).then(r => r.data),
+}
+
+// ── 导入日志 API ────────────────────────────
+export const importLogApi = {
+  list: () =>
+    client.get<ImportLog[]>('/import-logs/')
+      .then(r => r.data),
+
+  get: (logId: string) =>
+    client.get<ImportLog>(`/import-logs/${logId}`)
+      .then(r => r.data),
+
+  getFailedRecords: (logId: string, page = 1, pageSize = 20) =>
+    client.get<FailedRecordsPage>(`/import-logs/${logId}/failed-records`, {
+      params: { page, page_size: pageSize }
+    }).then(r => r.data),
+
+  retry: (logId: string, records: any[], cleaningConfig: DataCleaningConfig) =>
+    client.post(`/import-logs/${logId}/retry`, { records, cleaning_config: cleaningConfig })
+      .then(r => r.data),
+
+  delete: (logId: string) =>
+    client.delete(`/import-logs/${logId}`)
+      .then(r => r.data),
 }
 
 // ── 健康检查 ────────────────────────────────
